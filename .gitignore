@@ -1,0 +1,41 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node (in case tooling gets added later)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python (in case tooling gets added later)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local scratch
+.tmp/
+tmp/
+scratch/
+
+# Secrets — never commit
+.env
+.env.local
+*.pem
+*.key
