@@ -1,6 +1,5 @@
 # kugamon-skills
-
-Claude Code skills for Kugamon — agentic workflows that manage the full **Quote-to-Cash** and **Subscription Management** lifecycle in Salesforce through the Kugamon managed packages.
+Skills for Kugamon — agentic workflows that manage the full **Quote-to-Cash** and **Subscription Management** lifecycle in Salesforce through the Kugamon managed packages.
 
 > **Status:** Private / in testing.
 > This repository is private while we validate the skills against live Kugamon orgs. It will be made public once testing is complete.
