@@ -7,7 +7,7 @@ status: in-testing
 
 # Kugamon Use Cases:
 
-Full lifecycle skill for Kugamon CPQ
+Full lifecycle skill for Kugamon RevOps for Salesforce functionality
 
 **CPQ Flow:** Opportunity → Quote → Order → (Order Release) → Asset
 
