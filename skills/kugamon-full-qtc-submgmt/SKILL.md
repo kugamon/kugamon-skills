@@ -1,7 +1,7 @@
 ---
 name: kugamon-full-qtc-submgmt
 description: Manage the full Kugamon Quote-to-Cash lifecycle in Salesforce — opportunities, quotes, orders, invoices, payments, shipments, and assets, which uses the kugo2p namespace (Kugamon Quote to Cash). And optionally Managed the full Kugamon Subscription Billing lifecycle  in Salesforce - opportunities, quotes, orders, invoices, payments, shipments, contracts, subscriptions, and assets, which requires the kuga_sub namespace (Kugamon Subscription Management). Detects which packages are installed and adapts accordingly. Use when users request operations on any Kugamon object.
-version: 0.1.0
+version: 0.2.0
 status: Beta
 ---
 
@@ -35,6 +35,43 @@ Check if `kuga_sub__Renew__c` exists on `OpportunityLineItem` by describing the 
 - `HAS_KUGA_SUB = false` → only kugo2p (Q2C only, no subscription lifecycle)
 
 This flag controls revenue classification, line-item separation, and whether Order Release creates contracts/assets/subscriptions.
+
+---
+
+## ⚠️ CRITICAL: Opportunity Pipeline Forecasting Field
+
+**When `HAS_KUGA_SUB = true` (Kugamon Subscription Management is installed), ALWAYS use `kuga_sub__Amount__c` for Opportunity pipeline forecasting. DO NOT use the standard Salesforce `Amount` field.**
+
+### Why this matters
+
+The standard `Amount` field on Opportunity is unreliable in subscription orgs — it can be configured to display MRR, ACV, TCV, or some other value, and the meaning varies by org and even by opportunity. Using it for forecasting will produce incorrect pipeline numbers.
+
+`kuga_sub__Amount__c` is a Roll-Up SUM field maintained by the Kugamon Subscription Management package. It aggregates the correct revenue values from OpportunityLineItems and is the authoritative figure for pipeline reporting in subscription orgs.
+
+### Rules
+
+1. **`HAS_KUGA_SUB = true`** → use `kuga_sub__Amount__c` for all pipeline forecasts, revenue reports, dashboards, and aggregate opportunity-level reporting. Never substitute the standard `Amount` field.
+2. **`HAS_KUGA_SUB = false`** → use the standard `Amount` field as normal (the `kuga_sub__*` fields don't exist).
+3. When a user asks about "opportunity amount," "pipeline value," or "forecast" in a subscription org, default to `kuga_sub__Amount__c` and briefly explain why.
+4. When building SOQL queries, reports, or list views for pipeline in a subscription org, select `kuga_sub__Amount__c` — not `Amount`.
+
+### Quick example
+
+```sql
+-- CORRECT (HAS_KUGA_SUB = true):
+SELECT Id, Name, kuga_sub__Amount__c
+FROM Opportunity
+WHERE IsClosed = false
+
+-- WRONG (HAS_KUGA_SUB = true):
+SELECT Id, Name, Amount
+FROM Opportunity
+WHERE IsClosed = false
+```
+
+See **Appendix B: Amount Fields Guide** for detailed field-by-field reference and comparison rules.
+
+---
 
 ## Org-Specific Setup
 
@@ -1290,9 +1327,13 @@ Set `HAS_KUGA_SUB = false`. Use `kugo2p__AdditionalProductDetail__c.kugo2p__Serv
 
 ## Appendix B: Amount Fields Guide
 
+### 🔑 Pipeline Forecasting Rule (read first)
+
+**When `HAS_KUGA_SUB = true`, use `kuga_sub__Amount__c` for all Opportunity pipeline forecasting. DO NOT use the standard `Amount` field.** This is the authoritative Roll-Up SUM field maintained by the Kugamon Subscription Management package for forecasting and pipeline reporting. See the "CRITICAL: Opportunity Pipeline Forecasting Field" section near the top of this skill for full context.
+
 ### The Amount Field Problem
 
-In Salesforce orgs with subscription management, the standard `Amount` field on Opportunity can represent different values depending on configuration: Monthly Recurring Revenue (MRR), Annual Recurring Revenue (ARR), Total Contract Value (TCV), or Annual Contract Value (ACV). This creates confusion when comparing opportunity amounts to quote totals.
+In Salesforce orgs with subscription management, the standard `Amount` field on Opportunity can represent different values depending on configuration: Monthly Recurring Revenue (MRR), Annual Recurring Revenue (ARR), Total Contract Value (TCV), or Annual Contract Value (ACV). This creates confusion when comparing opportunity amounts to quote totals — and makes the standard `Amount` field unsuitable for pipeline forecasting. Use `kuga_sub__Amount__c` instead whenever the kuga_sub package is installed.
 
 ### Subscription Amount Fields
 
@@ -1300,7 +1341,8 @@ In Salesforce orgs with subscription management, the standard `Amount` field on 
 
 | Field API Name | Meaning | Example |
 |----------------|---------|---------|
-| `Amount` | **May be MRR or ACV** | $10,000 (could be monthly or annual) |
+| `Amount` (standard) | **Do NOT use for forecasting when `HAS_KUGA_SUB = true`.** May be MRR, ACV, TCV — varies by org | $10,000 (could be monthly or annual) |
+| `kuga_sub__Amount__c` | **✅ USE THIS for pipeline forecasting.** Roll-Up SUM maintained by Kugamon | $120,000 |
 | `kuga_sub__MonthlyRecurringRevenue__c` | Monthly recurring revenue | $10,000/month |
 | `kuga_sub__AnnualContractValueInitial__c` | Annual contract value | $120,000/year |
 | `kuga_sub__TotalContractValue__c` | Total contract value | $120,000 (1-year) or $360,000 (3-year) |
@@ -1344,11 +1386,12 @@ In Salesforce orgs with subscription management, the standard `Amount` field on 
 
 ### Amount Field Best Practices
 
-1. Always query ALL amount fields before making comparisons
-2. Check for presence of subscription fields to determine comparison strategy
-3. Show all relevant amounts in user-facing summaries
-4. Never assume what `Amount` represents — let the data guide you
-5. Document discrepancies clearly when amounts don't match expected patterns
+1. **For pipeline forecasting in subscription orgs (`HAS_KUGA_SUB = true`), always use `kuga_sub__Amount__c` — never the standard `Amount` field.**
+2. Always query ALL amount fields before making comparisons
+3. Check for presence of subscription fields to determine comparison strategy
+4. Show all relevant amounts in user-facing summaries
+5. Never assume what the standard `Amount` represents in a subscription org — let the data guide you
+6. Document discrepancies clearly when amounts don't match expected patterns
 
 ---
 
