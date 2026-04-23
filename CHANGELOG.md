@@ -9,11 +9,12 @@ All notable changes to this repository are documented here. This project loosely
 ### Fixed
 
 - `kugamon-full-qtc-submgmt` skill — corrected the umbrella product name in the skill's opening line. Changed "Full lifecycle skill for Kugamon RevOps for Salesforce functionality" to "Full lifecycle skill for Kugamon RevOps for Salesforce" so the umbrella product name is used exactly as specified, with no modifiers.
+- `README.md` — updated the `kugamon-full-qtc-submgmt` description from "Manages the full Kugamon lifecycle" to "Manages the full Kugamon RevOps for Salesforce lifecycle" so the umbrella product name is used consistently.
 - Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.0` to `0.2.1`.
 
 ### Notes
 
-- Copy-only change. No behavior change.
+- Copy-only changes. No behavior change.
 
 ## [0.2.0] — 2026-04-23
 
