@@ -8,7 +8,7 @@ Skills for Kugamon — agentic workflows that manage the full **Quote-to-Cash** 
 
 | Skill | Location | Version | Status |
 |-------|----------|---------|--------|
-| `kugamon-full-qtc-submgmt` | [`skills/kugamon-full-qtc-submgmt/`](./skills/kugamon-full-qtc-submgmt/) | 0.2.1 | Beta |
+| `kugamon-full-qtc-submgmt` | [`skills/kugamon-full-qtc-submgmt/`](./skills/kugamon-full-qtc-submgmt/) | 0.2.2 | Beta |
 
 ### kugamon-full-qtc-submgmt
 
