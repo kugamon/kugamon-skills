@@ -4,6 +4,20 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-04-23
+
+### Fixed
+
+- `kugamon-full-qtc-submgmt` skill — replaced remaining "Kugamon CPQ" references with the correct Kugamon package names. "Kugamon CPQ" is not one of the approved package names; the packages are Kugamon Quote to Cash (kugo2p), Kugamon Subscription Management (kuga_sub), and Kugamon Subscription Billing.
+  - Object Model Overview heading: "kugo2p Objects (Kugamon CPQ — ~50 custom objects)" → "kugo2p Objects (Kugamon Quote to Cash — ~50 custom objects)".
+  - Opportunity Fields > Strongly Recommended Fields (`AccountId`): "Required for Kugamon CPQ to work properly" → "Required for Kugamon Quote to Cash to work properly".
+  - Appendix D: Renew Field Guide > Overview: "classification in Kugamon CPQ" → "classification in Kugamon Subscription Management" (`kuga_sub__Renew__c` is a kuga_sub field, so Subscription Management is the correct package reference).
+- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.1` to `0.2.2`.
+
+### Notes
+
+- Copy-only changes. No behavior change.
+
 ## [0.2.1] — 2026-04-23
 
 ### Fixed
