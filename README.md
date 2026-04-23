@@ -12,7 +12,7 @@ Skills for Kugamon — agentic workflows that manage the full **Quote-to-Cash** 
 
 ### kugamon-full-qtc-submgmt
 
-Manages the full Kugamon lifecycle — opportunities, quotes, orders, order releases, invoices, payments, shipments, contracts, subscriptions, renewal opportunities, and assets.
+Manages the full Kugamon RevOps for Salesforce lifecycle — opportunities, quotes, orders, order releases, invoices, payments, shipments, contracts, subscriptions, renewal opportunities, and assets.
 
 **Supports four Kugamon deployment modes:**
 
