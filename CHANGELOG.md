@@ -4,6 +4,32 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-05-24
+
+### Added
+
+- `kugamon-full-qtc-submgmt` skill — new **Appendix E: Name Field & Sample Data Conventions** in `SKILL.md`. Documents the `Name`-field behavior of every key transactional and master-data Kugamon object so that sample data is generated with the correct convention. Organized into four groups:
+  - **Group A** — AutoNumber with date-stamped prefix: `kugo2p__SalesQuote__c` (`SQ-{YYMMDD}-{0000000}`), `kugo2p__SalesOrder__c` (`SO-{YYMMDD}-{0000000}`), `kugo2p__KugamonInvoice__c` (`INV-{YYMMDD}-{0000000}`). DO NOT set `Name`.
+  - **Group B** — AutoNumber, sequence-only (7-digit zero-padded). Covers all line/junction objects (`SalesQuoteProductLine`, `SalesQuoteServiceLine`, `SalesQuoteAdditionalChargeCredit`, `SalesQuoteOptionalLine`, `SalesOrderProductLine`, `SalesOrderServiceLine`, `SalesOrderAdditionalChargeCredit`, `KugamonInvoiceLine`, `KugamonInvoiceAdditionalChargeCredit`, `OrderInvoiceRelationship`, `ShipmentLine`, `AppliedPayment`, `AdditionalProductDetail`, `ProductCost`) plus `Shipment`, and `ConfigurationOption` which uses a `CO-` prefix. DO NOT set `Name`.
+  - **Group C** — `Text(80)` but overwritten by Kugamon Apex: `kugo2p__PaymentX__c` (set to `Payment for Order <SO#>` / `Payment for Invoice <INV#>`), `kugo2p__Payment_Method__c` (set to `<Card Brand> (<last 4>)`), `kugo2p__AdditionalAccountDetail__c` (mirrors `Account.Name`). DO NOT set `Name`.
+  - **Group D** — `Text(80)`, user-supplied: line groups, invoice schedules, payment profiles, additional charges/credits, product catalogs/categories, tiers, tiered pricing, carriers, warehouses, tax locations, VAT, service delivery schedules, processor connections. DO set a meaningful `Name`.
+  - Includes a "Common mistakes to avoid in sample data" checklist (don't invent your own prefix like `Q-…`, `QT-…`, `ORD-…`, `IN-…`, `INV2-…`, or `SQ-0001` without a date; the date portion is the org-local creation date; etc.).
+- `SKILL.md` — Appendix A, Quote "Auto-Managed Fields" table: the `Name` row now shows the `SQ-{YYMMDD}-{0000000}` format inline and cross-references Appendix E.
+- Background: a sample quote in an unrelated task had been created with the wrong `Name` convention. Appendix E documents the actual rules so future sample-data work follows them.
+
+### Fixed
+
+- `SKILL.md` frontmatter `version` was still `0.2.1` even though CHANGELOG entries for 0.2.1 and 0.2.2 both claimed the frontmatter had been bumped. Brought it up to `0.2.3` to match this release.
+
+### Verification
+
+- Tooling-API `FieldDefinition` metadata for every documented object (confirmed `Auto Number` vs `Text(80)` per object).
+- Live sample records from the `kugamon.dev` org (Org ID `00D80000000cH27EAE`) across all four groups.
+
+### Notes
+
+- Docs-only change. No behavior change.
+
 ## [0.2.2] — 2026-04-23
 
 ### Fixed
