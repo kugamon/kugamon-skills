@@ -1162,7 +1162,7 @@ Set `HAS_KUGA_SUB = false`. Use `kugo2p__AdditionalProductDetail__c.kugo2p__Serv
 
 | Field | Description |
 |-------|-------------|
-| `Name` | Auto-generated quote number |
+| `Name` | Auto-generated quote number (format `SQ-{YYMMDD}-{0000000}`) — see Appendix E for full naming conventions and sample-data rules |
 | `kugo2p__Status__c` | Workflow-managed |
 | `kugo2p__TotalAmount__c` | Calculated from lines |
 | `kugo2p__SubtotalAmount__c` | Calculated |
@@ -1536,3 +1536,98 @@ The NonRecurringRevenue will automatically recalculate to $0 via Kugamon's autom
 ### Technical Detail
 
 Kugamon automation calculates MRR/ARR based on product pricing and term, then populates NonRecurringRevenue based on the Renew field. When `Renew = false`, NonRecurringRevenue = line total. When `Renew = true`, NonRecurringRevenue = 0. Attempting to update `kuga_sub__NonRecurringRevenue__c` directly will be overridden — the Renew field is the source of truth.
+
+---
+
+## Appendix E: Name Field & Sample Data Conventions
+
+When creating sample or test records in any Kugamon CPQ org, **the `Name` field is rarely user-supplied.** Most key transactional objects use **Auto Number** on Name, which means:
+
+- Salesforce assigns the value on insert.
+- The field is **not createable and not updateable** — values you pass in DML are silently ignored.
+- The format (prefix, date stamp, sequence width) is fixed by the package — you cannot override it.
+
+A hand-typed Name like `Q-001`, `Test Quote`, or `SQ-0001` in sample data is a clear sign the record was hand-crafted instead of created through the standard flow.
+
+**Rule of thumb:** Before authoring a sample record, run `get_object_fields` on the target object and read the `Name` field's `DataType`.
+
+- `Auto Number` → omit `Name` entirely from the create payload.
+- `Text(80)` → either supply a meaningful value (Group D below) or expect Kugamon Apex to overwrite whatever you supply (Group C below).
+
+### Group A: Auto Number, date-stamped prefix — DO NOT set Name
+
+Transactional "header" objects. Name is system-assigned in the format `{PREFIX}-{YYMMDD}-{0000000}`.
+
+| Object API Name | Label | Name Label | Format | Example |
+|---|---|---|---|---|
+| `kugo2p__SalesQuote__c` | Quote | Quote Number | `SQ-{YYMMDD}-{0000000}` | `SQ-260519-0020461` |
+| `kugo2p__SalesOrder__c` | Order | Order Number | `SO-{YYMMDD}-{0000000}` | `SO-260521-0113570` |
+| `kugo2p__KugamonInvoice__c` | Invoice | Invoice Number | `INV-{YYMMDD}-{0000000}` | `INV-260505-0091615` |
+
+The `YYMMDD` portion is the org-local creation date of the record — not arbitrary. You cannot back-date Name by writing a fake date into it.
+
+### Group B: Auto Number, sequence only — DO NOT set Name
+
+Line items, junctions, and detail rows. Name is a zero-padded 7-digit sequence with no prefix (one exception: `ConfigurationOption__c` uses a `CO-` prefix).
+
+| Object API Name | Label | Example |
+|---|---|---|
+| `kugo2p__SalesQuoteProductLine__c` | Quote Product Line | `0098308` |
+| `kugo2p__SalesQuoteServiceLine__c` | Quote Service Line | `0043468` |
+| `kugo2p__SalesQuoteAdditionalChargeCredit__c` | Quote Additional Charge/Credit | `0009725` |
+| `kugo2p__SalesQuoteOptionalLine__c` | Quote Optional Line | `0003452` |
+| `kugo2p__SalesOrderProductLine__c` | Order Product Line | `0167453` |
+| `kugo2p__SalesOrderServiceLine__c` | Order Service Line | `0098030` |
+| `kugo2p__SalesOrderAdditionalChargeCredit__c` | Order Additional Charge/Credit | `0050596` |
+| `kugo2p__KugamonInvoiceLine__c` | Invoice Line | `0186531` |
+| `kugo2p__KugamonInvoiceAdditionalChargeCredit__c` | Invoice Additional Charge/Credit | `0008382` |
+| `kugo2p__OrderInvoiceRelationship__c` | Order/Invoice Relationship | `0077818` |
+| `kugo2p__Shipment__c` | Shipment | `0094394` |
+| `kugo2p__ShipmentLine__c` | Shipment Line | `0094394` |
+| `kugo2p__AppliedPayment__c` | Applied Payment | `0031357` |
+| `kugo2p__AdditionalProductDetail__c` | Additional Product Info | `0024014` |
+| `kugo2p__ProductCost__c` | Product Cost | `0000000` |
+| `kugo2p__ConfigurationOption__c` | Configuration Option | `CO-0000003` |
+
+### Group C: Text(80) populated by Kugamon Apex — DO NOT set Name
+
+The field is technically writeable, but Kugamon's managed-package logic overwrites it on insert/update. Whatever you supply in sample data is wiped out.
+
+| Object API Name | What Apex writes into Name | Example |
+|---|---|---|
+| `kugo2p__PaymentX__c` (Payment) | `Payment for Order <Order Number>` or `Payment for Invoice <Invoice Number>` | `Payment for Order SO-260325-0113546` |
+| `kugo2p__Payment_Method__c` (Payment Method) | `<Card Brand> (<last 4>)` from the tokenized card | `Visa (4242)` |
+| `kugo2p__AdditionalAccountDetail__c` (Additional Account Info) | Mirrors the related `Account.Name` | `Starbucks Corporation` |
+
+### Group D: Text(80), user-supplied — DO set a meaningful Name
+
+No Apex auto-population. Sample data must include a human-readable Name. Match the conventions already in the org.
+
+| Object API Name | Label | Convention / examples |
+|---|---|---|
+| `kugo2p__QuoteLineGroup__c` | Quote Group Name | `Product & Service Lines`, `Product & Service Lines 3` |
+| `kugo2p__OrderLineGroup__c` | Order Group Name | `Product & Service Lines`, `Tax Testing` |
+| `kugo2p__InvoiceSchedule__c` | Schedule | `One-Time Invoicing`, `Yearly Invoicing`, `Quarterly Invoicing` |
+| `kugo2p__Payment_Profile__c` | Recurring Charge | Free text |
+| `kugo2p__AdditionalChargeCredit__c` | Additional Charge/Credit | `Standard Shipping`, `e-Commerce Tax Charge`, `$50 Coupon` |
+| `kugo2p__ProductCatalog__c` | Product Catalog | `Generator Catalog`, `Tacton Catalog`, `Subscription Catalog` |
+| `kugo2p__ProductCategory__c` | Product Category | `Generator`, `Diesel`, `Gasoline`, `Propane` |
+| `kugo2p__Tier__c` | Tier | `Volume Pricing`, `Discount Schedule` |
+| `kugo2p__TieredPricing__c` | Tiered Pricing | `Generator`, `Installation Service`, `Support Level` |
+| `kugo2p__Carrier__c` | Carrier | `FedEx`, `UPS`, `USPS`, `Delivery Van` |
+| `kugo2p__Warehouse__c` | Warehouse | `Main`, `Remote`, `Kugamon LLC` |
+| `kugo2p__TaxLocation__c` | Tax Location | `State Tax: CA`, `UK Sales Tax`, `Sweden VAT` |
+| `kugo2p__VAT__c` | VAT/GST | Country, e.g., `UK`, `Germany` |
+| `kugo2p__ServiceDeliverySchedule__c` | Service Delivery | Descriptive — `Subscription Service (Scheduled 4 Quarters)`, `SLA: Bronze w/Cost Pricing` |
+| `kugo2p__Processor_Connection__c` | Processor Connection | `PayPal Sandbox`, `Authorize.net Sandbox` |
+
+### Common mistakes to avoid in sample data
+
+- **Don't invent your own prefix.** `Q-…`, `QT-…`, `ORD-…`, `IN-…`, `INV2-…`, `SQ-0001` (no date) are all wrong. The Quote/Order/Invoice prefix is fixed: `SQ`, `SO`, `INV`. The date is `YYMMDD` of the actual creation date. The sequence is 7 digits, zero-padded.
+- **Don't supply Name on AutoNumber objects.** Salesforce silently drops the value; the saved record will be fine, but reviewing the sample script vs. the resulting record will be confusing because the Name in the org won't match what the script said it set.
+- **Don't supply Name on Group C objects expecting it to stick.** It is overwritten by the package trigger immediately.
+- **Verify Name behavior with metadata first**, not by trial-and-error:
+  ```
+  get_object_fields(object_name='kugo2p__SalesQuote__c')
+  # Look at the Name row: DataType will say "Auto Number" or "Text(80)"
+  ```
