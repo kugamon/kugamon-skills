@@ -1,7 +1,7 @@
 ---
 name: kugamon-full-qtc-submgmt
 description: Manage the full Kugamon Quote-to-Cash lifecycle in Salesforce — opportunities, quotes, orders, invoices, payments, shipments, and assets, which uses the kugo2p namespace (Kugamon Quote to Cash). And optionally Managed the full Kugamon Subscription Billing lifecycle  in Salesforce - opportunities, quotes, orders, invoices, payments, shipments, contracts, subscriptions, and assets, which requires the kuga_sub namespace (Kugamon Subscription Management). Detects which packages are installed and adapts accordingly. Use when users request operations on any Kugamon object.
-version: 0.2.1
+version: 0.2.3
 status: Beta
 ---
 
@@ -95,7 +95,7 @@ Cache results for the session. Map by name: Opportunity "New" → Quote "New" �
 
 ## Object Model Overview
 
-### kugo2p Objects (Kugamon CPQ — ~50 custom objects)
+### kugo2p Objects (Kugamon Quote to Cash — ~50 custom objects)
 
 **Quote Stage:**
 - `kugo2p__SalesQuote__c` (~95 fields) — master quote
@@ -1038,7 +1038,7 @@ Set `HAS_KUGA_SUB = false`. Use `kugo2p__AdditionalProductDetail__c.kugo2p__Serv
 
 | Field API Name | Type | Description |
 |----------------|------|-------------|
-| `AccountId` | Lookup(Account) | Required for Kugamon CPQ to work properly |
+| `AccountId` | Lookup(Account) | Required for Kugamon Quote to Cash to work properly |
 | `Pricebook2Id` | Lookup(Pricebook2) | Required if adding opportunity products |
 
 #### Optional Fields
@@ -1449,7 +1449,7 @@ If no match found, ask the user or default to "New Business."
 
 ### Overview
 
-The `kuga_sub__Renew__c` field on OpportunityLineItem is critical for proper revenue classification in Kugamon CPQ. It determines whether a product/service is treated as recurring or non-recurring.
+The `kuga_sub__Renew__c` field on OpportunityLineItem is critical for proper revenue classification in Kugamon Subscription Management. It determines whether a product/service is treated as recurring or non-recurring.
 
 ### Renew Field Behavior
 
