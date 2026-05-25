@@ -65,7 +65,7 @@ The skill handles package detection, record type routing, line-item population, 
 
 During the private testing phase:
 
-1. Uese the skill with a **non-production Kugamon sandbox** first.
+1. Use the skill with a **non-production Kugamon sandbox** first.
 2. Report bugs, unexpected behavior, or wording issues by opening an issue on this repo.
 3. Once the skill passes validation against all four deployment modes, the repository will be made public.
 
