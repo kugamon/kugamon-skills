@@ -4,6 +4,20 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [Unreleased]
 
+## [0.2.4] — 2026-05-24
+
+### Fixed
+
+- `README.md` — Usage section examples used invented record-name prefixes that contradicted the naming conventions documented in Appendix E of `SKILL.md` (added in 0.2.3):
+  - `Q-0042` (Quote) → `SQ-260519-0020461` (correct `SQ-{YYMMDD}-{0000000}` format).
+  - `O-0099` (Order) → `SO-260521-0113570` (correct `SO-{YYMMDD}-{0000000}` format).
+- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.3` to `0.2.4` — done in the same commit as the README and CHANGELOG updates per the lesson learned in 0.2.3 (prior releases claimed frontmatter bumps that never made it into the file).
+- Bumped the README skills table row from `0.2.3` to `0.2.4` to match.
+
+### Notes
+
+- Docs-only change. No behavior change.
+
 ## [0.2.3] — 2026-05-24
 
 ### Added

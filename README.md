@@ -8,7 +8,7 @@ Skills for Kugamon — agentic workflows that manage the full **Quote-to-Cash** 
 
 | Skill | Location | Version | Status |
 |-------|----------|---------|--------|
-| `kugamon-full-qtc-submgmt` | [`skills/kugamon-full-qtc-submgmt/`](./skills/kugamon-full-qtc-submgmt/) | 0.2.3 | Beta |
+| `kugamon-full-qtc-submgmt` | [`skills/kugamon-full-qtc-submgmt/`](./skills/kugamon-full-qtc-submgmt/) | 0.2.4 | Beta |
 
 ### kugamon-full-qtc-submgmt
 
@@ -55,8 +55,8 @@ Point your agent's skill loader at `skills/kugamon-full-qtc-submgmt/SKILL.md`.
 Once installed, invoke the skill by asking Claude to perform any Kugamon Quote-to-Cash operation in plain English. Examples:
 
 - *"Create a new quote in my Kugamon sandbox for Acme Corp for 50 user licenses."*
-- *"Convert quote Q-0042 into an order."*
-- *"Generate an invoice for order O-0099 and record a payment."*
+- *"Convert quote SQ-260519-0020461 into an order."*
+- *"Generate an invoice for order SO-260521-0113570 and record a payment."*
 - *"Show me all open renewal opportunities closing this quarter."*
 
 The skill handles package detection, record type routing, line-item population, and amount-field interpretation automatically.
