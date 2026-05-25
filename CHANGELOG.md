@@ -2,7 +2,7 @@
 
 All notable changes to this repository are documented here. This project loosely follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [Released]
 
 ## [0.2.4] — 2026-05-24
 
