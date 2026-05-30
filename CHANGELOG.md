@@ -4,6 +4,35 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [Released]
 
+## [0.2.6] — 2026-05-24
+
+### Fixed
+
+- **`kugamon-full-qtc-submgmt` skill — major Product2 / line-level field-semantics correction.** Multiple sections previously conflated three independent Order Release triggers. The corrected mappings are:
+  - `Product2.kuga_sub__Track__c` (label: "Create Subscription") — generates a Subscription on Order Release, **but only for Services** (`APD.kugo2p__Service__c = true`). Products never generate Subscriptions, regardless of any flag.
+  - `Product2.kuga_sub__Renewable__c` — triggers **Renewal Opportunity** creation on Order Release (NOT Subscription). Also drives the "Renewable" prefix on the Product Snapshot LWC setup label.
+  - `kugo2p__AdditionalProductDetail__c.kugo2p__CreateAsset__c` — drives **Asset** creation on Order Release. Note: `kugo2p` namespace, on APD (not `kuga_sub`, not on Product2).
+  - Line-level `kuga_sub__Track__c` (Order Line, Quote Line, OLI) — same "Create Subscription" semantics; propagated from `Product2.kuga_sub__Track__c`.
+  - Line-level `kuga_sub__Renew__c` — revenue classification only (recurring MRR/ARR vs one-time NonRecurringRevenue). Does NOT create Subscriptions. See Appendix D.
+
+### Sections updated
+
+- `## Object Model Overview` — On Product2 (4 fields), On kugo2p__SalesOrderServiceLine__c, On kugo2p__SalesOrderProductLine__c blocks.
+- `## Workflow 3: Order Release` — "What Gets Created" (Subscriptions, Assets, Renewal Opportunity blocks) and "Product2 Flags for Order Release" table (now "Product2 (and APD) Flags for Order Release"; added the APD `CreateAsset__c` row).
+- `## Apex Class Logic` — "Renew/Track Flag Propagation Chain" diagram replaced with a clearer "Order Release Trigger Map" that separates the three independent flags.
+- `## Product Setup` → `### Setup Types` (added 0.2.5) — driver-fields table expanded to include `Track__c` and `CreateAsset__c`; new "Label vs behavior" callout; "What each type implies downstream" table rewritten so Products never claim Subscription creation, and Renewal Opportunity creation is properly attributed to the "Renewable" prefix.
+- `## Appendix A` — "Order Line kuga_sub Fields" and "Product2 kuga_sub Fields" tables corrected.
+
+### Changed
+
+- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.5` to `0.2.6`.
+- Bumped the README skills table row from `0.2.5` to `0.2.6` to match.
+
+### Notes
+
+- Docs-only change. No behavior change in the skill or the underlying package — the correction is purely to the documentation.
+- Frontmatter, README, and CHANGELOG all bumped in the same commit.
+
 ## [0.2.5] — 2026-05-24
 
 ### Added
