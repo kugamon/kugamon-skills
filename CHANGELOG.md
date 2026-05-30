@@ -4,6 +4,33 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [Released]
 
+## [0.2.7] — 2026-05-24
+
+### Fixed
+
+- **Subscription and Asset creation are split by line-object** — earlier releases (notably 0.2.5 and 0.2.6) implied either could come from any line. The corrected rules are:
+  - **Subscriptions** are created **only from Order Service Lines** (`kugo2p__SalesOrderServiceLine__c`). When `APD.kugo2p__Service__c = true` AND `Product2.kuga_sub__Track__c = true` ("Create Subscription"), the Order Service Line trigger generates a Subscription on Order Release.
+  - **Assets** are created **only from Order Product Lines** (`kugo2p__SalesOrderProductLine__c`). When `APD.kugo2p__Service__c = false` AND `APD.kugo2p__CreateAsset__c = true`, the Order Product Line trigger generates an Asset on Order Release.
+  - The two never mix: Order Service Lines never generate Assets, and Order Product Lines never generate Subscriptions — regardless of how the underlying flags are set.
+
+### Sections updated
+
+- `## Object Model Overview` — Product2 (4 fields), SalesOrderServiceLine, SalesOrderProductLine blocks now state the line-object split explicitly.
+- `## Workflow 3: Order Release` — "What Gets Created" (Subscriptions, Assets blocks) and "Product2 (and APD) Flags for Order Release" table rewritten to make the Order Service Line ↔ Subscription and Order Product Line ↔ Asset pairing the headline.
+- `## Apex Class Logic` — "Order Release Trigger Map" diagram restructured into three clearly-labeled sections: SUBSCRIPTION (Order Service Line trigger only), ASSET (Order Product Line trigger only), RENEWAL OPPORTUNITY (any line).
+- `## Product Setup` → `### Setup Types` — driver-fields table now specifies the line-object each flag operates on; the "Label vs behavior" callout calls out the line-object split; the "What each type implies downstream" table no longer suggests services can create Assets or products can create Subscriptions.
+- `## Appendix A` — "Order Line kuga_sub Fields" and "Product2 kuga_sub Fields" tables now use the Order Service Line / Order Product Line distinction.
+
+### Changed
+
+- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.6` to `0.2.7`.
+- Bumped the README skills table row from `0.2.6` to `0.2.7` to match.
+
+### Notes
+
+- Docs-only change. No behavior change in the skill or the underlying package — the correction is purely to the documentation.
+- Frontmatter, README, and CHANGELOG all bumped in the same commit.
+
 ## [0.2.6] — 2026-05-24
 
 ### Fixed
