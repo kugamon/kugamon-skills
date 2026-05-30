@@ -1,7 +1,7 @@
 ---
 name: kugamon-full-qtc-submgmt
 description: Manage the full Kugamon Quote-to-Cash lifecycle in Salesforce — opportunities, quotes, orders, invoices, payments, shipments, and assets, which uses the kugo2p namespace (Kugamon Quote to Cash). And optionally Managed the full Kugamon Subscription Billing lifecycle  in Salesforce - opportunities, quotes, orders, invoices, payments, shipments, contracts, subscriptions, and assets, which requires the kuga_sub namespace (Kugamon Subscription Management). Detects which packages are installed and adapts accordingly. Use when users request operations on any Kugamon object.
-version: 0.2.4
+version: 0.2.5
 status: Beta
 ---
 
@@ -924,6 +924,51 @@ FROM kugo2p__Shipment__c WHERE kugo2p__SalesOrder__c = '<order_id>'
 Extended metadata auto-created by Product2Trigger. Key fields:
 - `kugo2p__Service__c` — **CRITICAL when HAS_KUGA_SUB = false**: product vs. service classification
 - `kugo2p__Taxable__c`, `kugo2p__Configurable__c`, `kugo2p__Kit__c`
+
+### Setup Types
+
+Every product in Kugamon resolves to one of six **Setup types** based on three independent flags on the `Product2` and `kugo2p__AdditionalProductDetail__c` (APD) records. Knowing which type a product is determines how it flows through quote, order, fulfillment, and (if `kuga_sub` is installed) subscription lifecycles.
+
+#### Driver fields
+
+| Field | Object | Effect on Setup type |
+|---|---|---|
+| `kugo2p__Service__c` | `kugo2p__AdditionalProductDetail__c` | Switches the whole classification between **Service** and **Product** branches |
+| `kugo2p__DefaultServiceTerm__c` | `kugo2p__AdditionalProductDetail__c` | Numeric term for services. Defaults to `1` when blank |
+| `kugo2p__UnitofTerm__c` | `kugo2p__AdditionalProductDetail__c` | Picklist (Day / Week / Month / Year) — the unit appended after the term for services |
+| `kugo2p__DisableShipments__c` | `kugo2p__AdditionalProductDetail__c` | Products only. `false` (default) → "Shippable" applies. `true` → no shipment is generated on order release |
+| `kuga_sub__Renewable__c` | `Product2` | Only evaluated when the `kuga_sub` package is installed. When `true`, the product generates a Subscription on order release |
+
+#### The six Setup types
+
+| # | Setup type (example) | `Service__c` | `DisableShipments__c` | `Renewable__c` (Product2) | kuga_sub installed |
+|---|---|---|---|---|---|
+| 1 | `12 Month Service` | `true` | n/a | `false` or n/a | optional |
+| 2 | `Renewable 12 Month Service` | `true` | n/a | `true` | **required** |
+| 3 | `Product` | `false` | `true` | `false` or n/a | optional |
+| 4 | `Shippable Product` | `false` | `false` / blank | `false` or n/a | optional |
+| 5 | `Renewable Product` | `false` | `true` | `true` | **required** |
+| 6 | `Renewable Shippable Product` | `false` | `false` / blank | `true` | **required** |
+
+The `{Term}` portion in rows 1 and 2 is `DefaultServiceTerm__c` (or `1` when blank). The `{Unit}` is the `UnitofTerm__c` picklist value — typically `Day`, `Week`, `Month`, or `Year`. So `1 Year Service`, `30 Day Service`, `Renewable 6 Month Service`, etc. are all valid variations of types 1 and 2.
+
+#### The rule in plain English
+
+1. If `kuga_sub` is installed **and** `Product2.kuga_sub__Renewable__c` is `true`, the type starts with `Renewable`.
+2. If `APD.kugo2p__Service__c` is `true`, the type ends with `{Term} {Unit} Service`. Otherwise (it's a product):
+   - If `APD.kugo2p__DisableShipments__c` is `true`, the type ends with `Product`.
+   - Else the type ends with `Shippable Product`.
+
+#### What each type implies downstream
+
+| Setup type | On Order Release creates… |
+|---|---|
+| `{Term} {Unit} Service` | Order Service Line, no Shipment, no Subscription, no Asset |
+| `Renewable {Term} {Unit} Service` | Order Service Line + Subscription (and Asset if `Track__c = true`) |
+| `Product` | Order Product Line, no Shipment, no Subscription |
+| `Shippable Product` | Order Product Line + Shipment |
+| `Renewable Product` | Order Product Line + Subscription (and Asset if `Track__c = true`), no Shipment |
+| `Renewable Shippable Product` | Order Product Line + Shipment + Subscription (and Asset if `Track__c = true`) |
 
 ### Kit/Bundle (kugo2p__KitBundleMember__c)
 ```sql

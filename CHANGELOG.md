@@ -4,6 +4,29 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [Released]
 
+## [0.2.5] — 2026-05-24
+
+### Added
+
+- `kugamon-full-qtc-submgmt` skill — new **Setup Types** sub-section in the existing `## Product Setup` section of `SKILL.md`. Documents the six possible Product Setup classifications that every Kugamon product resolves to:
+  1. `{Term} {Unit} Service` (e.g. `12 Month Service`)
+  2. `Renewable {Term} {Unit} Service` (requires `kuga_sub`)
+  3. `Product` (non-shippable)
+  4. `Shippable Product`
+  5. `Renewable Product` (requires `kuga_sub`)
+  6. `Renewable Shippable Product` (requires `kuga_sub`)
+- The new sub-section includes: (a) a driver-fields table mapping the five fields that determine the type (`kugo2p__Service__c`, `kugo2p__DefaultServiceTerm__c`, `kugo2p__UnitofTerm__c`, `kugo2p__DisableShipments__c`, `kuga_sub__Renewable__c`), (b) a six-row classification table showing the exact field combinations behind each type, (c) the rule in plain English, and (d) a downstream-implications table showing what each type creates on Order Release.
+
+### Changed
+
+- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.4` to `0.2.5`.
+- Bumped the README skills table row from `0.2.4` to `0.2.5` to match.
+
+### Notes
+
+- Docs-only change. No behavior change.
+- Frontmatter, README, and CHANGELOG all bumped in the same commit (consistent with 0.2.4 practice).
+
 ## [0.2.4] — 2026-05-24
 
 ### Fixed
