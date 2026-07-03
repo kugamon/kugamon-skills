@@ -1,0 +1,23 @@
+{
+  "name": "kugamon",
+  "version": "0.2.7",
+  "description": "Cowork / Claude Desktop plugin for agentic Quote-to-Cash and Subscription Management in Salesforce orgs running the Kugamon managed packages (kugo2p, kuga_sub). Auto-detects CPQ, Q2C, SubMgmt, and SB deployment modes.",
+  "author": {
+    "name": "Kugamon"
+  },
+  "homepage": "https://github.com/kugamon/kugamon-skills",
+  "repository": "https://github.com/kugamon/kugamon-skills",
+  "license": "Proprietary",
+  "keywords": [
+    "kugamon",
+    "salesforce",
+    "quote-to-cash",
+    "cpq",
+    "subscription-management",
+    "billing",
+    "mcp",
+    "claude-desktop",
+    "cowork"
+  ],
+  "skills": "./skills"
+}

@@ -1,0 +1,30 @@
+{
+  "name": "kugamon-marketplace",
+  "owner": {
+    "name": "Kugamon"
+  },
+  "plugins": [
+    {
+      "name": "kugamon",
+      "source": "./plugins/kugamon",
+      "description": "Agentic Quote-to-Cash and Subscription Management for Salesforce orgs running the Kugamon managed packages — opportunities, quotes, orders, order releases, invoices, payments, shipments, contracts, subscriptions, renewals, and assets. Auto-detects CPQ, Q2C, SubMgmt, and SB deployment modes.",
+      "version": "0.2.7",
+      "author": {
+        "name": "Kugamon"
+      },
+      "homepage": "https://github.com/kugamon/kugamon-skills",
+      "license": "Proprietary",
+      "keywords": [
+        "kugamon",
+        "salesforce",
+        "quote-to-cash",
+        "cpq",
+        "subscription-management",
+        "billing",
+        "mcp",
+        "claude-desktop",
+        "cowork"
+      ]
+    }
+  ]
+}
