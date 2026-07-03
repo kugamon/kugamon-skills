@@ -4,8 +4,6 @@ A Claude Desktop / Cowork **plugin marketplace** that ships a single plugin (`ku
 
 This repo **does not install an MCP server**. It assumes you already have a Salesforce MCP server connected to a Kugamon org. The plugin's job is to teach Claude the Kugamon object model, lifecycle flows, record type routing, and amount-field semantics so it can run Quote-to-Cash operations end to end.
 
-> **Status: Beta.** Validate against a non-production Kugamon sandbox before using in production orgs.
-
 ## Why this plugin
 
 Out of the box, Claude can query and update Salesforce records — but it doesn't know:
@@ -110,12 +108,6 @@ The skill handles package detection, record type routing, line-item population, 
 **Wrong amounts on opportunities or quotes.** The skill reads `kuga_sub__Amount__c` for full subscription/contract value; the standard `Amount` field may show MRR or prorated values. If numbers look off, confirm which field you're comparing against.
 
 **Objects missing (contracts, subscriptions).** The org likely runs CPQ or Q2C mode without the `kuga_sub` package — those objects only exist in SubMgmt/SB modes.
-
-## Testing (Beta)
-
-1. Use the skill with a **non-production Kugamon sandbox** first.
-2. Report bugs, unexpected behavior, or wording issues by opening an issue on this repo.
-3. The repository will be made public once the skill passes validation against all four deployment modes.
 
 ## Contributing
 
