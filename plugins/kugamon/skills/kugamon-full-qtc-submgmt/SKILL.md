@@ -1,7 +1,7 @@
 ---
 name: kugamon-full-qtc-submgmt
 description: Manage the full Kugamon Quote-to-Cash lifecycle in Salesforce — opportunities, quotes, orders, invoices, payments, shipments, and assets, which uses the kugo2p namespace (Kugamon Quote to Cash). And optionally Managed the full Kugamon Subscription Billing lifecycle  in Salesforce - opportunities, quotes, orders, invoices, payments, shipments, contracts, subscriptions, and assets, which requires the kuga_sub namespace (Kugamon Subscription Management). Detects which packages are installed and adapts accordingly. Use when users request operations on any Kugamon object.
-version: 0.2.7
+version: 0.3.0
 status: Beta
 ---
 
@@ -35,6 +35,57 @@ Check if `kuga_sub__Renew__c` exists on `OpportunityLineItem` by describing the 
 - `HAS_KUGA_SUB = false` → only kugo2p (Q2C only, no subscription lifecycle)
 
 This flag controls revenue classification, line-item separation, and whether Order Release creates contracts/assets/subscriptions.
+
+---
+
+## Decimal Price Precision (kugo2p v11.0+)
+
+As of Kugamon Quote to Cash v11.0, the price fields on quote lines, order lines, Account Pricing, Tier, and Asset were widened from 2 decimals to **6 decimals** (`Currency(12, 6)`). Invoice-line **stored** currency fields stay at 2 decimals, but invoice-line **formula** currency fields inherit the 6-decimal precision from the upstream Order line — so invoices render all 6 decimals end-to-end via formulas, not via stored fields.
+
+### Where 6-decimal pricing is stored
+
+| Object | Stored fields that accept up to 6 decimals |
+|---|---|
+| `kugo2p__SalesQuoteProductLine__c` | `kugo2p__ListPrice__c`, `kugo2p__SalesPrice__c`, `kugo2p__TierPrice__c` |
+| `kugo2p__SalesQuoteServiceLine__c` | `kugo2p__ListPrice__c`, `kugo2p__SalesPrice__c`, `kugo2p__NonUpliftSalesPrice__c`, `kugo2p__UpliftPrice__c`, `kugo2p__TierPrice__c` |
+| `kugo2p__SalesQuoteOptionalLine__c` | `kugo2p__ListPrice__c`, `kugo2p__SalesPrice__c` |
+| `kugo2p__SalesOrderProductLine__c` | `kugo2p__ListPrice__c`, `kugo2p__SalesPrice__c`, `kugo2p__TierPrice__c` |
+| `kugo2p__SalesOrderServiceLine__c` | `kugo2p__ListPrice__c`, `kugo2p__SalesPrice__c`, `kugo2p__NonUpliftSalesPrice__c`, `kugo2p__UpliftPrice__c`, `kugo2p__TierPrice__c` |
+| `kugo2p__AccountPricing__c` | `kugo2p__Price__c` |
+| `kugo2p__Tier__c` | `kugo2p__TierPrice__c` |
+| `Asset` | `kugo2p__PurchasePrice__c` |
+
+### Per-product rounding: `kugo2p__PriceScale__c` on APD
+
+A new picklist field on `kugo2p__AdditionalProductDetail__c` controls how many decimals are **used** for each product:
+
+- `kugo2p__PriceScale__c` — Picklist. Observed values: `4`, `5`, `6`. Blank (null) means the org default (2 decimals) is used.
+- Related picklists shipped at the same time: `kugo2p__QuantityScale__c`, `kugo2p__ServiceTermScale__c`.
+- The Quote and Order Lightning Configurator (Add Lines / Configure Lines / Edit Lines) honors `PriceScale__c` when displaying and validating list price and sales price for the product. Tiered Pricing honors it too.
+
+### Formula fields inherit the 6-decimal precision
+
+Several key currency fields on quote lines, order lines, AND invoice lines are **Formula (Currency)** fields that reference the stored 6-decimal fields upstream — formulas display at the precision of the field they read, so these carry 6 decimals end-to-end:
+
+- `kugo2p__DiscountSalesPrice__c` — **label: "Effective Price"**. Formula on quote lines, order lines, AND invoice lines. The computed per-unit price after line discount.
+- On `kugo2p__KugamonInvoiceLine__c`, additional Formula (Currency) fields inherit precision from the related order line: `kugo2p__SalesPrice__c` (yes, invoice line's SalesPrice is itself a formula that reads back from the Order line), `kugo2p__LineAmount__c`, `kugo2p__NetAmount__c`, `kugo2p__TotalAmount__c`, `kugo2p__TaxAmount__c`, `kugo2p__VATAmount__c`, `kugo2p__LineDiscountAmount__c`, `kugo2p__BalanceDueAmount__c`.
+
+So invoice-line pricing DOES carry the full 6-decimal precision when the upstream Order line uses it — just via formulas, not stored fields. Invoice PDF and online templates render all 6 decimals (v11.0+).
+
+### What does NOT change
+
+- `kugo2p__KugamonInvoiceLine__c` **stored** currency fields are still 2-decimal (`kugo2p__AppliedPaymentAmount__c` is `Currency(16, 2)`). The 6-decimal precision reaches invoices via the Formula fields above, which read back from the parent Order line.
+- `PricebookEntry.UnitPrice` (standard Salesforce) is 2-decimal — you cannot store a 6-decimal list price on a pricebook entry. The 6 decimals come in on the line via `ListPrice__c` and `SalesPrice__c`.
+- `OpportunityLineItem.UnitPrice` is 2-decimal. If you need the full-precision price flowing from a quote back to the opportunity, read the quote/order line, not the OLI.
+
+### SOQL / DML rules
+
+1. When reading a 6-decimal field, do **not** cast or round it client-side unless the user explicitly asks — the fourth-through-sixth decimals carry real pricing meaning.
+2. When writing a 6-decimal field via DML, pass the full value (e.g. `1234.567891`). Kugamon's APD-driven validation enforces the per-product `PriceScale__c` cap.
+3. Document templates (quote/order PDF, online quote, online invoice) and the Lightning Configurator render all 6 decimals as of v11.0 — don't truncate in custom display logic.
+4. Opportunity amount roll-ups (`kuga_sub__Amount__c`, `kuga_sub__ARR__c`, etc.) continue to roll up at their native (2-decimal) precision — line-level precision does not propagate up.
+
+The full matrix of 6-decimal stored fields AND Formula (Currency) fields that inherit the precision is in **Appendix A: 6-Decimal Price Fields (v11.0+)**.
 
 ---
 
@@ -73,391 +124,159 @@ See **Appendix B: Amount Fields Guide** for detailed field-by-field reference an
 
 ---
 
-## Org-Specific Setup
+## Workflow 8: 2-way Quote Chat (kugo2p v11.0+)
 
-**NEVER hardcode Record Type IDs.** Always query dynamically:
+Kugamon Quote to Cash v11.0 added an in-app chat on every Quote, plus a 2-way variant that works through the Online Quote page so an external contact and an internal user can message each other without leaving their respective surfaces. Chat is backed by two custom objects, not Chatter.
 
-```sql
-SELECT Id, Name, SObjectType, DeveloperName
-FROM RecordType
-WHERE SObjectType IN (
-  'kugo2p__SalesQuote__c', 'kugo2p__SalesOrder__c',
-  'kugo2p__Payment_Profile__c', 'kugo2p__Processor_Connection__c',
-  'kugo2p__Payment_Method__c', 'Opportunity'
-)
-AND IsActive = true
-ORDER BY SObjectType, Name
+### Objects
+
+| Object | Key Prefix | Purpose |
+|---|---|---|
+| `kugo2p__ChatParticipant__c` | `a0B` | One record per person (internal User **or** external Contact) authorized to chat on a specific quote. Also tracks each person's read state. |
+| `kugo2p__ChatMessage__c` | `a0H` | One record per message posted. Each message belongs to a single `ChatParticipant__c` — that participant is the sender. |
+
+### Relationship
+
+```
+kugo2p__SalesQuote__c  (the quote)
+      ↑
+      │  kugo2p__QuoteNumber__c (lookup on Participant)
+      │
+kugo2p__ChatParticipant__c  (sender identity + read state)
+      ↑
+      │  kugo2p__ChatParticipant__c (lookup on Message)
+      │
+kugo2p__ChatMessage__c   (message content)
 ```
 
-Cache results for the session. Map by name: Opportunity "New" → Quote "New" → Order "New", etc.
+The sender's **type** is on the Participant, not the Message:
+- `kugo2p__ChatParticipant__c.kugo2p__Type__c = 'Internal User'` → populated `kugo2p__User__c` (lookup to User), empty `kugo2p__Contact__c`.
+- `kugo2p__ChatParticipant__c.kugo2p__Type__c = 'Contact'` → populated `kugo2p__Contact__c` (lookup to Contact), empty `kugo2p__User__c`.
+
+A composite key, `kugo2p__ParticipantKey__c = {QuoteId}-{UserOrContactId}`, prevents duplicate participants on the same quote.
+
+### Internal vs. 2-way online quote chat
+
+The same objects power two experiences:
+
+1. **Internal chat on the Quote record** — Lightning component (shipped as part of v11.0's "Chat Messaging Function to Quotes") lets internal users thread messages. All participants are `Type = 'Internal User'`.
+2. **2-way chat on the Online Quote page** — the external contact replies through the signed online quote link (Email Quote Link functionality from v10.2). Their messages insert as `Type = 'Contact'` participants on the same quote's thread, visible to the internal team in real time.
+
+Both surfaces read and write the exact same two objects. There is no separate "external chat" container.
+
+### Read-receipt / unread tracking
+
+Each participant row tracks what they have personally read:
+- `kugo2p__LastReadMessage__c` (lookup → ChatMessage__c) — the last message that participant has seen.
+- `kugo2p__DateLastRead__c` (datetime) — when they saw it.
+
+An "unread count" is computed by counting messages on the quote newer than the participant's `LastReadMessage__c` (or `DateLastRead__c`), excluding messages they themselves authored. The package updates these fields as the participant views the chat.
+
+### Message storage
+
+- `kugo2p__Body__c` — Rich text / HTML (textarea). The actual message as typed. Example: `<p>any questions?</p>`.
+- `kugo2p__BodyPreview__c` — Plain-text truncated preview, used in list views, email notifications, and the inline message tile. Example: `any questions?`.
+- `kugo2p__ParticipantName__c` on the Message — denormalized sender display name, kept in sync with the Participant's name so a long thread doesn't need the lookup resolved on read.
+
+### Sample: read a quote's full chat thread
+
+```sql
+SELECT Id, Name, CreatedDate,
+       kugo2p__ChatParticipant__r.Name,
+       kugo2p__ChatParticipant__r.kugo2p__ParticipantName__c,
+       kugo2p__ChatParticipant__r.kugo2p__Type__c,
+       kugo2p__Body__c, kugo2p__BodyPreview__c
+FROM kugo2p__ChatMessage__c
+WHERE kugo2p__ChatParticipant__r.kugo2p__QuoteNumber__c = '<quote_id>'
+ORDER BY CreatedDate ASC
+```
+
+### Sample: list participants on a quote (with unread timestamps)
+
+```sql
+SELECT Id, Name, kugo2p__ParticipantName__c, kugo2p__Type__c,
+       kugo2p__User__r.Name, kugo2p__Contact__r.Name, kugo2p__Email__c,
+       kugo2p__LastReadMessage__c, kugo2p__DateLastRead__c
+FROM kugo2p__ChatParticipant__c
+WHERE kugo2p__QuoteNumber__c = '<quote_id>'
+ORDER BY CreatedDate ASC
+```
+
+### Posting a message on behalf of a user (programmatic)
+
+1. Resolve the participant row for the sender on this quote (query by `kugo2p__ParticipantKey__c = '<quoteId>-<userOrContactId>'`). If none, insert one first with the right `Type__c` + `User__c`/`Contact__c`.
+2. Insert a `kugo2p__ChatMessage__c` with:
+   - `kugo2p__ChatParticipant__c` = that participant's Id
+   - `kugo2p__Body__c` = HTML (even if plain text, wrap in `<p>…</p>`)
+   - `kugo2p__BodyPreview__c` = plain-text truncation of Body
+   - `kugo2p__ParticipantName__c` = sender's display name (denormalized)
+3. The package maintains the recipient's unread state — do not try to write `LastReadMessage__c` on anyone other than the viewing participant.
+
+### Naming conventions
+
+Both chat objects are AutoNumber, so **do not supply `Name`**:
+- `kugo2p__ChatMessage__c.Name` — 9-digit zero-padded sequence, e.g. `000000165`.
+- `kugo2p__ChatParticipant__c.Name` — `CP-{0000000}` prefix, e.g. `CP-0000070`.
+
+See **Appendix E** for the full sample-data naming matrix.
+
+### Related v11.0 touch-ups to the online quote
+
+v11.0 also shipped **new Quote Acceptance and Rejection email templates**, which are triggered by the same online-quote actions the external contact takes while they are chatting. If a prospect accepts (or rejects) via the online quote, the chat thread survives on the quote and is a useful handoff artifact for whoever picks up the account.
 
 ---
 
 ## Object Model Overview
 
-### kugo2p Objects (Kugamon Quote to Cash — ~50 custom objects)
+### kugo2p Objects (Kugamon Quote to Cash)
 
-**Quote Stage:**
-- `kugo2p__SalesQuote__c` (~95 fields) — master quote
-- `kugo2p__SalesQuoteServiceLine__c` (~89 fields) — recurring service lines
-- `kugo2p__SalesQuoteProductLine__c` (~76 fields) — one-time product lines
-- `kugo2p__SalesQuoteOptionalLine__c` (~16 fields) — optional upsell lines
-- `kugo2p__SalesQuoteAdditionalChargeCredit__c` (~34 fields) — surcharges/discounts
-- `kugo2p__QuoteLineGroup__c` (~14 fields) — line grouping
+See **Appendix A** for full field reference. Key custom objects by stage:
 
-**Order Stage:**
-- `kugo2p__SalesOrder__c` (~110 fields) — master order
-- `kugo2p__SalesOrderServiceLine__c` (~108 fields) — recurring service order lines
-- `kugo2p__SalesOrderProductLine__c` (~105 fields) — one-time product order lines
-- `kugo2p__SalesOrderAdditionalChargeCredit__c` (~39 fields) — surcharges/discounts
-- `kugo2p__OrderLineGroup__c` (~13 fields) — line grouping
+**Quote / Order / Invoice / Payment / Fulfillment stages**: `kugo2p__SalesQuote__c`, `kugo2p__SalesQuoteServiceLine__c`, `kugo2p__SalesQuoteProductLine__c`, `kugo2p__SalesQuoteOptionalLine__c`, `kugo2p__SalesQuoteAdditionalChargeCredit__c`, `kugo2p__QuoteLineGroup__c`, `kugo2p__SalesOrder__c`, `kugo2p__SalesOrderServiceLine__c`, `kugo2p__SalesOrderProductLine__c`, `kugo2p__SalesOrderAdditionalChargeCredit__c`, `kugo2p__OrderLineGroup__c`, `kugo2p__KugamonInvoice__c`, `kugo2p__KugamonInvoiceLine__c`, `kugo2p__KugamonInvoiceAdditionalChargeCredit__c`, `kugo2p__InvoiceSchedule__c`, `kugo2p__OrderInvoiceRelationship__c`, `kugo2p__PaymentX__c`, `kugo2p__AppliedPayment__c`, `kugo2p__Payment_Method__c`, `kugo2p__Payment_Profile__c`, `kugo2p__Processor_Connection__c`, `kugo2p__Shipment__c`, `kugo2p__ShipmentLine__c`, `kugo2p__ServiceDeliverySchedule__c`, `kugo2p__Carrier__c`, `kugo2p__Warehouse__c`.
 
-**Invoice Stage:**
-- `kugo2p__KugamonInvoice__c` (~73 fields) — invoice
-- `kugo2p__KugamonInvoiceLine__c` (~47 fields) — invoice line items
-- `kugo2p__KugamonInvoiceAdditionalChargeCredit__c` (~39 fields) — invoice adjustments
-- `kugo2p__OrderInvoiceRelationship__c` (~15 fields) — order-to-invoice link
-- `kugo2p__InvoiceSchedule__c` (~15 fields) — recurring invoice generation
+**Product & Pricing**: `kugo2p__AdditionalProductDetail__c` (APD, ~67 fields as of v11.0 — v11.0 added `kugo2p__PriceScale__c`, `kugo2p__QuantityScale__c`, `kugo2p__ServiceTermScale__c` picklists that control per-product decimal precision for price, quantity, and service term; see "Decimal Price Precision" above), `kugo2p__AccountPricing__c`, `kugo2p__TieredPricing__c`, `kugo2p__Tier__c`, `kugo2p__ProductCost__c`, `kugo2p__AdditionalChargeCredit__c`, `kugo2p__ProductCatalog__c`, `kugo2p__ProductCategory__c`.
 
-**Payment Stage:**
-- `kugo2p__PaymentX__c` (~71 fields) — payment records
-- `kugo2p__AppliedPayment__c` (~22 fields) — payment-to-invoice allocation
-- `kugo2p__Processor_Connection__c` (~52 fields) — gateway configs (Stripe, AuthNet, PayPal, eWay)
-- `kugo2p__Payment_Method__c` (~32 fields) — payment method definitions
-- `kugo2p__Payment_Profile__c` (~57 fields) — customer payment profiles
+**Configuration & Bundles**: `kugo2p__ConfigurationGroup__c`, `kugo2p__ConfigurationOption__c`, `kugo2p__KitBundleMember__c`.
 
-**Fulfillment Stage:**
-- `kugo2p__Shipment__c` (~31 fields) — shipment records
-- `kugo2p__ShipmentLine__c` (~27 fields) — shipment line items
-- `kugo2p__ServiceDeliverySchedule__c` (~30 fields) — service delivery tracking
-- `kugo2p__Carrier__c` (~11 fields) — shipping carriers
-- `kugo2p__Warehouse__c` (~17 fields) — warehouse/inventory locations
+**Tax**: `kugo2p__TaxLocation__c`, `kugo2p__TaxRate__c`, `kugo2p__VAT__c`, `kugo2p__VATRate__c`.
 
-**Product & Pricing:**
-- `kugo2p__AdditionalProductDetail__c` (~64 fields) — extended product metadata (Service flag, weight, dimensions, tax, etc.)
-- `kugo2p__AccountPricing__c` (~26 fields) — customer-specific pricing overrides
-- `kugo2p__TieredPricing__c` (~16 fields) — volume/tiered pricing headers
-- `kugo2p__Tier__c` (~12 fields) — individual tier definitions
-- `kugo2p__ProductCost__c` (~11 fields) — product cost tracking
-- `kugo2p__AdditionalChargeCredit__c` (~29 fields) — reusable charge/credit templates
-- `kugo2p__ProductCatalog__c` (~19 fields) — product catalog
-- `kugo2p__ProductCategory__c` — product categories
-- `kugo2p__ProductCategoryProduct__c` — category-product junction
+**Account & Settings**: `kugo2p__AdditionalAccountDetail__c`, `kugo2p__KugamonSetting__c`, `kugo2p__Settings__c`.
 
-**Configuration & Bundles:**
-- `kugo2p__ConfigurationGroup__c` (~16 fields) — product configuration groups
-- `kugo2p__ConfigurationOption__c` (~27 fields) — configuration options
-- `kugo2p__KitBundleMember__c` (~15 fields) — kit/bundle components
-
-**Tax:**
-- `kugo2p__TaxLocation__c` (~15 fields) — US tax jurisdictions
-- `kugo2p__TaxRate__c` (~13 fields) — US tax rates
-- `kugo2p__VAT__c` (~12 fields) — international VAT definitions
-- `kugo2p__VATRate__c` (~15 fields) — VAT rates
-
-**Account:**
-- `kugo2p__AdditionalAccountDetail__c` (~44 fields) — extended account metadata
-
-**Settings:**
-- `kugo2p__KugamonSetting__c` (~78 fields) — master org-wide settings
-- `kugo2p__Settings__c` (~19 fields) — additional settings
-
-**Utility:**
-- `kugo2p__Favorite__c`, `kugo2p__FavoriteMember__c`, `kugo2p__FavoriteShare__c`
-- `kugo2p__Shopping_Cart_Item__c` (~21 fields)
+**Quote Chat (v11.0+)**:
+- `kugo2p__ChatParticipant__c` (20 fields) — one record per person (internal User or external Contact) authorized to chat on a quote. Carries read-receipt state (`kugo2p__LastReadMessage__c`, `kugo2p__DateLastRead__c`). See Workflow 8.
+- `kugo2p__ChatMessage__c` (12 fields) — one record per message. HTML body in `kugo2p__Body__c`, plain-text preview in `kugo2p__BodyPreview__c`. Linked to its sender via `kugo2p__ChatParticipant__c`.
 
 ### kuga_sub Objects (Kugamon Subscriptions — only when HAS_KUGA_SUB = true)
 
-**Custom Objects:**
-- `kuga_sub__Subscription__c` (34 fields) — the subscription record linking orders to contracts
+**Custom**: `kuga_sub__Subscription__c` (34 fields) — the subscription record linking orders to contracts.
 
-**Fields added to standard objects by kuga_sub:**
+**Fields added by kuga_sub to standard / kugo2p objects:**
 
-On **Product2** (4 fields):
-- `kuga_sub__Renewable__c` (Checkbox) — drives the "Renewable" prefix on Product setup labels (e.g. in the Product Snapshot LWC) **and** triggers Renewal Opportunity creation on Order Release. Does NOT itself create a Subscription.
-- `kuga_sub__RenewalProduct__c` (Lookup Product) — substitute product for renewal quotes
-- `kuga_sub__Track__c` (Checkbox, **label: "Create Subscription"**) — when `true` AND the line lands on an **Order Service Line** (`kugo2p__SalesOrderServiceLine__c`, i.e. `APD.kugo2p__Service__c = true`), the Order Service Line trigger generates a `kuga_sub__Subscription__c` on Order Release. **Order Product Lines never generate Subscriptions, regardless of this flag.**
-- `kuga_sub__UpliftRenewalPrice__c` (Checkbox) — apply price uplift percentage on renewal
+- **On Product2**: `kuga_sub__Renewable__c` (drives "Renewable" prefix on Setup labels AND triggers Renewal Opportunity creation on Order Release — does NOT create Subscription), `kuga_sub__RenewalProduct__c` (substitute product for renewal), `kuga_sub__Track__c` (label "Create Subscription" — generates Subscription on Order Release but only for Order Service Lines where `APD.kugo2p__Service__c = true`; Order Product Lines never generate Subscriptions), `kuga_sub__UpliftRenewalPrice__c`. Asset creation is separate and Product-only: APD `kugo2p__CreateAsset__c` drives Asset creation, and only Order Product Lines generate Assets.
 
-> **Asset creation is separate and Product-only.** APD field `kugo2p__AdditionalProductDetail__c.kugo2p__CreateAsset__c` drives Asset creation, and only **Order Product Lines** (`kugo2p__SalesOrderProductLine__c`) generate Assets. Order Service Lines never generate Assets. Note: `kugo2p` namespace, on APD.
+- **On OpportunityLineItem** (18 fields): `kuga_sub__Renew__c` (CRITICAL — recurring vs one-time), ARR/MRR/NonRecurringRevenue, ServiceTerm/UnitofTerm/DateServiceEnd, NetAmount/TotalAmount/ListAmount, Service formula, forecasting fields, discount tracking, uplift tracking.
 
-On **OpportunityLineItem** (18 fields):
-- `kuga_sub__Renew__c` (Checkbox) — **CRITICAL**: marks line as recurring vs. one-time
-- `kuga_sub__ARR__c`, `kuga_sub__MRR__c`, `kuga_sub__NonRecurringRevenue__c` — calculated revenue
-- `kuga_sub__ServiceTerm__c`, `kuga_sub__UnitofTerm__c` — term length and unit
-- `kuga_sub__DateServiceEnd__c` — service end date
-- `kuga_sub__NetAmount__c`, `kuga_sub__TotalAmount__c`, `kuga_sub__ListAmount__c` — amounts
-- `kuga_sub__Service__c` (Formula) — whether line is a service
-- `kuga_sub__ARRForecast__c`, `kuga_sub__LineTerm__c` — forecasting
-- `kuga_sub__DiscountSalesPrice__c`, `kuga_sub__EffectiveDiscount__c` — discount tracking
-- `kuga_sub__NonUpliftSalesPrice__c`, `kuga_sub__UpliftRenewalPrice__c` — renewal pricing
-- `kuga_sub__ServiceTermBehavior__c` — term behavior picklist
+- **On Opportunity** (19 fields): roll-up MRR/ARR/NonRecurringRevenue, formula ACV / TCV / ARR Forecast / Expected Revenue, parent contract / parent order lookups, renewal controls.
 
-On **Opportunity** (19 fields):
-- `kuga_sub__MonthlyRecurringRevenue__c` (Roll-Up SUM)
-- `kuga_sub__AnnualRecurringRevenueCommitted__c` (Roll-Up SUM)
-- `kuga_sub__NonRecurringRevenue__c` (Roll-Up SUM)
-- `kuga_sub__AnnualContractValueInitial__c` (Formula: NonRecurring + ARR)
-- `kuga_sub__TotalContractValue__c` (Formula)
-- `kuga_sub__Amount__c` (Roll-Up SUM)
-- `kuga_sub__AnnualRecurringRevenueForecast__c`, `kuga_sub__ExpectedRevenue__c`, `kuga_sub__OpportunityAmount__c` (Formulas)
-- `kuga_sub__ContractEndDate__c`, `kuga_sub__ParentContractEndDate__c` (Formula Date)
-- `kuga_sub__DateRequired__c` (Roll-Up MIN), `kuga_sub__ServiceDateExpires__c` (Roll-Up MAX)
-- `kuga_sub__ParentContract__c` (Lookup Contract), `kuga_sub__ParentOrder__c` (Lookup Order)
-- `kuga_sub__AutoEmailRenewalOrder__c` (Checkbox), `kuga_sub__AutoRenewedOrder__c` (Lookup Order)
-- `kuga_sub__RenewalOrderAutoCreationDate__c` (Date), `kuga_sub__RenewalPriceUpliftPercent__c` (Percent)
+- **On kugo2p__SalesOrder__c** (16 fields, Order Release controls): `kuga_sub__GenerateContract__c`, `kuga_sub__GenerateAsset__c`, `kuga_sub__GenerateSubscription__c`, `kuga_sub__GenerateRenewalOpportunity__c`, contract lookups, roll-up counts of renewable/trackable products/services.
 
-On **kugo2p__SalesOrder__c** (16 fields — **ORDER RELEASE controls**):
-- `kuga_sub__GenerateContract__c` (Checkbox) — create Contract on release
-- `kuga_sub__GenerateAsset__c` (Checkbox) — create Assets on release
-- `kuga_sub__GenerateSubscription__c` (Checkbox) — create Subscriptions on release
-- `kuga_sub__GenerateRenewalOpportunity__c` (Checkbox) — create Renewal Opportunity on release
-- `kuga_sub__ContractNumber__c` (Lookup Contract), `kuga_sub__ParentContract__c` (Lookup)
-- `kuga_sub__RenewalOpportunity__c` (Lookup Opportunity)
-- `kuga_sub__ContractEndDate__c`, `kuga_sub__ParentContractEndDate__c`, `kuga_sub__RenewalEndDate__c` (Formulas)
-- `kuga_sub__RenewableProductsCount__c`, `kuga_sub__RenewableServicesCount__c` (Roll-Ups)
-- `kuga_sub__TrackableProductsCount__c`, `kuga_sub__TrackableServicesCount__c` (Roll-Ups)
-- `kuga_sub__ServiceDateExpires__c` (Roll-Up MAX)
-- `kuga_sub__UpdateContractContacts__c` (Multi-Select Picklist)
+- **On kugo2p__SalesOrderServiceLine__c**: `kuga_sub__Renew__c` (revenue classification), `kuga_sub__Track__c` (generates Subscription — Order Service Lines never generate Assets).
 
-On **kugo2p__SalesQuote__c** (2 fields):
-- `kuga_sub__ContractEndDate__c` (Formula), `kuga_sub__ContractNumber__c` (Lookup Contract)
+- **On kugo2p__SalesOrderProductLine__c**: `kuga_sub__Renew__c`, `kuga_sub__Track__c` (present but no effect on product lines — Order Product Lines never generate Subscriptions). Order Product Lines generate Assets when APD `kugo2p__CreateAsset__c = true`.
 
-On **kugo2p__SalesOrderServiceLine__c** (2 fields):
-- `kuga_sub__Renew__c` (Checkbox) — revenue classification (recurring vs one-time). See Appendix D.
-- `kuga_sub__Track__c` (Checkbox, **label: "Create Subscription"**) — when `true` on an Order Service Line, the Order Service Line trigger generates a Subscription on Order Release. Propagated from `Product2.kuga_sub__Track__c`.
+- **On Contract** (21 fields): roll-up ARR/MRR/subscription count/dates, formula Effective, renewal notice controls.
 
-> Order Service Lines generate **Subscriptions** (via the rule above) but **never Assets**.
+- **On Asset** (4 fields): `kuga_sub__ContractNumber__c`, `kuga_sub__ParentSubscription__c`, `kuga_sub__ParentLine__c`, `kuga_sub__Renew__c` formula.
 
-On **kugo2p__SalesOrderProductLine__c** (2 fields):
-- `kuga_sub__Renew__c` (Checkbox) — revenue classification (recurring vs one-time)
-- `kuga_sub__Track__c` (Checkbox, label: "Create Subscription") — present on product lines but has no effect: Order Product Lines never generate Subscriptions on Order Release.
-
-> Order Product Lines generate **Assets** (when the related `APD.kugo2p__CreateAsset__c = true`) but **never Subscriptions**. Asset creation is driven by the Order Product Line trigger, not the Order Service Line trigger.
-
-On **kugo2p__SalesQuoteServiceLine__c** (1 field):
-- `kuga_sub__Renew__c` (Checkbox)
-
-On **kugo2p__SalesQuoteProductLine__c** (1 field):
-- `kuga_sub__Renew__c` (Checkbox)
-
-On **Contract** (21 fields):
-- `kuga_sub__AnnualRecurringRevenue__c`, `kuga_sub__MonthlyRecurringRevenue__c` (Roll-Up SUM Subscription)
-- `kuga_sub__TotalSubscriptionAmount__c`, `kuga_sub__TotalSubscriptionCount__c`, `kuga_sub__TotalSubscriptionQuantity__c` (Roll-Ups)
-- `kuga_sub__SubscriptionStartDate__c` (Roll-Up MIN), `kuga_sub__SubscriptionEndDate__c` (Roll-Up MAX)
-- `kuga_sub__AnnualRecurringRevenueForecast__c` (Formula)
-- `kuga_sub__Effective__c` (Formula Checkbox) — is contract currently active
-- `kuga_sub__Expanded__c` (Checkbox) — has been expanded
-- `kuga_sub__ContractRenewalNoticeDate__c` (Formula), `kuga_sub__SendRenewalNoticeToday__c` (Formula)
-- `kuga_sub__LastRenewalNoticeSentDate__c` (Date)
-- `kuga_sub__AutoEmailRenewalNotice__c`, `kuga_sub__AutoEmailRenewalOrder__c` (Checkboxes)
-- `kuga_sub__RenewalOpportunity__c` (Lookup Opportunity), `kuga_sub__RenewalTerm__c` (Number)
-- `kuga_sub__Pricebook2Id__c` (Lookup Pricebook)
-- `kuga_sub__ContactBuying__c`, `kuga_sub__ContactBilling__c`, `kuga_sub__ContactShipping__c` (Lookups)
-
-On **Asset** (4 fields):
-- `kuga_sub__ContractNumber__c` (Lookup Contract)
-- `kuga_sub__ParentSubscription__c` (Lookup Subscription)
-- `kuga_sub__ParentLine__c` (Formula)
-- `kuga_sub__Renew__c` (Formula Checkbox)
+**Line-object split for Order Release** — Subscriptions come only from Order Service Lines, Assets come only from Order Product Lines, no matter how the underlying flags are set. See **Workflow 3: Order Release** for details.
 
 ---
 
-## Apex Triggers
+## Apex Triggers / Apex Class Logic
 
-### kugo2p Triggers (34)
-
-| Trigger | Object | Purpose |
-|---------|--------|---------|
-| SalesQuoteTrigger | SalesQuote__c | Quote lifecycle (status, totals, numbering) |
-| SalesQuoteServiceLineTrigger | SalesQuoteServiceLine__c | Service line calculations |
-| SalesQuoteProductLineTrigger | SalesQuoteProductLine__c | Product line calculations |
-| SalesQuoteOptionalLineTrigger | SalesQuoteOptionalLine__c | Optional line handling |
-| SalesQuoteACCTrigger | SalesQuoteAdditionalChargeCredit__c | Quote charge/credit calcs |
-| SalesOrderTrigger | SalesOrder__c | Order lifecycle (status, totals, invoice gen) |
-| SalesOrderServiceLineTrigger | SalesOrderServiceLine__c | Service order line calcs |
-| SalesOrderProductLineTrigger | SalesOrderProductLine__c | Product order line calcs |
-| SalesOrderACCTrigger | SalesOrderAdditionalChargeCredit__c | Order charge/credit calcs |
-| InvoiceTrigger | KugamonInvoice__c | Invoice lifecycle |
-| InvoiceLineTrigger | KugamonInvoiceLine__c | Invoice line calcs |
-| InvoiceACCTrigger | KugamonInvoiceAdditionalChargeCredit__c | Invoice charge/credit calcs |
-| PaymentXTrigger | PaymentX__c | Payment processing |
-| AppliedPaymentTrigger | AppliedPayment__c | Payment-to-invoice allocation |
-| PaymentMethodTrigger | Payment_Method__c | Payment method validation |
-| PaymentProfileTrigger | Payment_Profile__c | Profile management |
-| PaymentSettingTrigger | Settings__c | Payment settings validation |
-| ProcessorConnectionTrigger | Processor_Connection__c | Processor connection mgmt |
-| ShipmentTrigger | Shipment__c | Shipment lifecycle |
-| ShipmentLineTrigger | ShipmentLine__c | Shipment line tracking |
-| ServiceDeliveryScheduleTrigger | ServiceDeliverySchedule__c | Service delivery tracking |
-| OpportunityTrigger | Opportunity | Opp-to-Kugamon sync |
-| AccountTrigger | Account | Account data sync |
-| AdditionalAccountDetailTrigger | AdditionalAccountDetail__c | Account metadata sync |
-| AdditionalProductDetailTrigger | AdditionalProductDetail__c | Product metadata sync |
-| Product2Trigger | Product2 | Product sync to AdditionalProductDetail |
-| AccountPricingTrigger | AccountPricing__c | Customer pricing validation |
-| ProductCostTrigger | ProductCost__c | Cost tracking |
-| ProductCatalogTrigger | ProductCatalog__c | Catalog management |
-| ProductCategoryTrigger | ProductCategory__c | Category management |
-| ConfigurationGroupTrigger | ConfigurationGroup__c | Product configuration |
-| KugamonSettingTrigger | KugamonSetting__c | Settings validation |
-| LeadTrigger | Lead | Lead conversion handling |
-| TaskTrigger | Task | Task automation |
-
-### kuga_sub Triggers (14 — only when HAS_KUGA_SUB = true)
-
-| Trigger | Object | Purpose |
-|---------|--------|---------|
-| Opportunities | Opportunity | Subscription revenue roll-ups, renewal opp linking |
-| Quote | SalesQuote__c | Contract linking on renewal quotes |
-| QuoteServiceLine | SalesQuoteServiceLine__c | Renew flag propagation to quote lines |
-| QuoteProductLine | SalesQuoteProductLine__c | Renew flag propagation to quote lines |
-| Order | SalesOrder__c | Order Release: generates Contract, Asset, Subscription, Renewal Opp |
-| OrderServiceLine | SalesOrderServiceLine__c | Renew/Track flag handling, subscription creation |
-| OrderProductLine | SalesOrderProductLine__c | Renew/Track flag handling, asset creation |
-| Contracts | Contract | Subscription roll-ups, renewal notice scheduling |
-| Asset | Asset | Contract/subscription linking |
-| Subscription | Subscription__c | Subscription lifecycle management |
-| Product | Product2 | Renewable/Track flag sync |
-| AdditionalAccountDetail | AdditionalAccountDetail__c | Account subscription data sync |
-| KugamonSetting | KugamonSetting__c | Subscription settings sync |
-| ShipmentLine | ShipmentLine__c | Asset tracking on shipment |
-
----
-
-## Apex Class Logic
-
-### kuga_sub Architecture
-
-All kuga_sub triggers use a **TriggerHandler** base class pattern with overridable methods: `beforeInsert`, `afterInsert`, `beforeUpdate`, `afterUpdate`, `beforeDelete`, `afterDelete`. Each trigger instantiates its handler and calls `handler.run()`.
-
-**Central orchestration class:** `KugamonHelper` — contains all core business logic as static methods. Trigger handlers are thin dispatchers that call into KugamonHelper.
-
-**Security:** All DML operations use `SecurityUtil.stripInaccessibleFromDML()` for FLS enforcement.
-
-### Order Release Coordination
-
-The most critical architectural pattern in kuga_sub. Three triggers (Order, ServiceLine, ProductLine) coordinate via static flags to ensure Order Release operations run exactly once regardless of trigger execution order.
-
-**Static coordination flags on KugamonHelper:**
-- `hasRenewableProducts` / `hasRenewableServices` — set by product/service line afterUpdate triggers
-- `processedContract` / `processedSubscription` — prevent duplicate processing
-- `processedProductLineAfterUpdateTrigger` / `processedServiceLineAfterUpdateTrigger` — track which line triggers have fired
-- `mapNewContractOrders` — shared map of orders needing processing, populated by SalesOrderTriggerHandler
-
-**Execution flow when Order status changes:**
-
-1. **SalesOrderTriggerHandler.afterUpdate** detects status change, populates `mapNewContractOrders`, calls `createContract` → `createSubscription` → `createRenewalOpportunity`
-2. Contract/Subscription creation updates order line items, which fires **ServiceLine** and **ProductLine** afterUpdate triggers
-3. Line triggers check `mapNewContractOrders` — if populated and their counterpart has already fired, they call `createContract` → `createSubscription` → `createRenewalOpportunity` again
-4. The `processedContract` / `processedSubscription` flags prevent duplicate execution
-
-**Key setting:** `InitiateOrderSubscriptionManagement__c` on `kuga_sub__SubscriptionSetting__c` controls WHEN Order Release fires:
-- `"Approve/Release"` — fires when order status changes to Approved AND Released
-- `"Release"` — fires only when order status changes to Released
-
-### KugamonHelper Key Methods
-
-#### Order Release Methods
-
-| Method | Purpose |
-|--------|---------|
-| `createContract(map<Id, SalesOrder__c>)` | Creates Contract from Order. Sets ContractTerm, StartDate, EndDate from order line dates. Copies contacts per `UpdateContractContacts__c` multi-select. If `ExtendContractonRenewal__c` = true for Renewal orders, extends existing contract instead of creating new one. Links contract back to order via `ContractNumber__c` |
-| `createSubscription(map<Id, SalesOrder__c>)` | Creates Subscription records from order lines where `Renew__c = true`. Sets MRR, ARR, NetAmount, TotalAmount, ServiceTerm, dates. Links to Contract, Account, Order, Product. Also creates Assets from lines where `Track__c = true` |
-| `createRenewalOpportunity(set<Id> orderIds)` | Creates Renewal Opportunity with matching RecordType. Copies line items from order to new opp as OpportunityLineItems. Sets `ParentContract__c` and `ParentOrder__c` on the renewal opp. Returns `List<OrderRenewalOpportunity>` wrapper |
-
-#### Cancellation / Un-Release Methods
-
-| Method | Purpose |
-|--------|---------|
-| `deActivateOrderContracts(set<Id>)` | When order is cancelled/un-released: deletes generated contracts, expires renewal opportunities (sets stage to "Closed Lost"), deactivates subscriptions |
-| `unReleaseUpsellOrders(map<Id, Id>)` | Handles un-release of expansion/upsell orders — reverses quantity changes on parent subscriptions |
-| `updateSubscriptionStatus(Set<Id>, String)` | Bulk updates subscription status for a set of order IDs |
-
-#### Renewal and Pricing Methods
-
-| Method | Purpose |
-|--------|---------|
-| `updateRenewalUpliftSalesPrice(map newOpps, map oldOpps)` | When a Renewal opportunity's `RenewalPriceUpliftPercent__c` changes, recalculates UnitPrice on all OLIs by applying uplift to `NonUpliftSalesPrice__c` |
-| `updateRenewalOrderContractPriceBook(map newOrders, map oldOrders)` | When Renewal order's pricebook changes, syncs back to parent Contract's `Pricebook2Id__c` |
-| `updateContractOpptyServiceTerm(map<Id, decimal>)` | Updates ServiceTerm on opportunity line items when contract renewal term changes |
-| `deleteOLISchedule(set<Id>)` | Deletes OpportunityLineItemSchedule records when renewal pricing changes |
-
-#### Line Item and Flag Propagation Methods
-
-| Method | Purpose |
-|--------|---------|
-| `updateRenewandServiceTerm(list<SObject>, boolean isService)` | On order line beforeInsert: propagates `Renew__c` from quote line to order line. Sets ServiceTerm and UnitofTerm. If no quote line link, falls back to Product2's `Renewable__c` flag |
-| `updateExpansionKitMemberServiceEndDate(list<ServiceLine>)` | For Expansion orders: adjusts service end dates on kit member lines to align with the parent kit line's end date |
-| `setAssetDetails(list<Asset>)` | beforeInsert on Asset: links asset to Contract and Subscription via `ContractNumber__c` and `ParentSubscription__c` |
-| `updateSubscriptionDetails(list<Asset>)` | afterInsert on Asset: updates the parent Subscription's `ParentAsset__c` to point back to the newly created asset |
-
-#### Matching Utility
-
-| Method | Purpose |
-|--------|---------|
-| `getOLIKey(orderId, productId, price, discount, description, configOptionId, startDate)` | Generates a composite key for matching Subscriptions to OpportunityLineItems. Used by SubscriptionTriggerHandler when cancelling subscriptions to find and reduce/delete corresponding renewal OLIs |
-
-### Trigger Handler Behaviors
-
-#### SalesOrderTriggerHandler
-- **beforeInsert**: Sets RecordType from linked Quote or Opportunity. For Expansion/Renewal: copies `ContractNumber__c` from Quote. Calls `setOrderDetails` which auto-calculates `GenerateContract__c`, `GenerateAsset__c`, `GenerateSubscription__c`, `GenerateRenewalOpportunity__c` based on whether line items have Renew/Track flags
-- **afterUpdate**: Detects Order status change → triggers Order Release chain (createContract → createSubscription → createRenewalOpportunity). On cancellation/un-release → calls `deActivateOrderContracts` to reverse all generated records
-
-#### SalesQuoteTriggerHandler
-- **beforeInsert**: Sets RecordType from linked Opportunity's RecordType. For Expansion/Renewal quotes when `ExtendContractonRenewal__c` is enabled: auto-sets `ContractNumber__c` and copies contacts (ContactBilling, ContactBuying, ContactShipping) from the Contract
-
-#### ContractTriggerHandler
-- **beforeInsert/Update**: Validates single active contract per account (unless `AllowMultipleActiveContracts__c` = true). Auto-calculates `ContractTerm` from StartDate and EndDate
-- **beforeUpdate**: `setContactDetails` syncs billing/shipping addresses from Contact records to Contract address fields. Validates required address fields are populated
-- **afterUpdate — Activation**: When contract activates, syncs `IsActive__c` on all child Subscriptions
-- **afterUpdate — Cancellation**: When contract is cancelled, cancels all child Subscriptions (sets `Status__c = 'Cancelled'`) and closes the linked Renewal Opportunity (stage → "Closed Lost")
-- **afterUpdate**: Syncs `AutoEmailRenewalOrder__c` flag changes to the linked Renewal Opportunity
-
-#### SubscriptionTriggerHandler
-- **beforeInsert/Update**: Syncs `IsActive__c` (editable) with `Active__c` (formula) to keep them aligned
-- **afterUpdate — Cancellation**: When a subscription is cancelled, finds matching OLIs on the Renewal Opportunity using `getOLIKey`. Reduces quantity on the matching OLI by the subscription's quantity. If resulting quantity ≤ 0, deletes the OLI entirely
-
-#### OpportunityTriggerHandler
-- **beforeUpdate**: Validates currency match for Expansion/Renewal opportunities — the opp's CurrencyIsoCode must match the parent Contract's currency. Prevents currency mismatch errors
-- **afterUpdate**: When `RenewalPriceUpliftPercent__c` changes on a Renewal opp, triggers `updateRenewalUpliftSalesPrice` to recalculate all line item prices
-
-#### AssetTriggerHandler
-- **beforeInsert**: Calls `KugamonHelper.setAssetDetails` — links asset to Contract and Subscription
-- **afterInsert**: Calls `KugamonHelper.updateSubscriptionDetails` — sets `ParentAsset__c` on the subscription
-
-#### SalesOrderServiceLineTriggerHandler
-- **beforeInsert**: Sets ListPrice from PricebookEntry. Propagates `Track__c` from `AdditionalProductDetail.ReferenceProduct.Track__c`. Propagates `Renew__c` from linked quote service line. Calls `updateRenewandServiceTerm` and `updateExpansionKitMemberServiceEndDate`
-- **afterUpdate**: Sets `processedServiceLineAfterUpdateTrigger = true`, then conditionally calls Order Release chain if `mapNewContractOrders` is populated
-
-#### SalesOrderProductLineTriggerHandler
-- **beforeInsert**: Same pattern as service line handler. `Track__c` from `AdditionalProductDetail.CreateAsset`. Propagates `Renew__c` from linked quote product line
-- **afterUpdate**: Sets `processedProductLineAfterUpdateTrigger = true`, then conditionally calls Order Release chain
-
-### Scheduled Batch Jobs
-
-Three scheduleable batch classes handle automated lifecycle operations:
-
-| Batch Class | Schedule | Purpose |
-|-------------|----------|---------|
-| `ContractRenewalNoticeBatcher` | Daily recommended | Sends renewal notice emails to contracts where `SendRenewalNoticeToday__c = true`. Uses email template from `SubscriptionSetting__c.ContractRenewalEmailTemplateName__c`. Updates `LastRenewalNoticeSentDate__c` after sending |
-| `RenewalOrderBatcher` | Daily recommended | Creates Renewal Orders from Renewal Opportunities where RecordType = 'Renewal' and `RenewalOrderAutoCreationDate__c <= today`. Creates `kugo2p__SalesOrder__c` with Renewal record type, copies contacts from Contract (falls back to AdditionalAccountDetail), splits line items into service/product lines based on `Service__c` flag |
-| `SubscriptionBatcher` | Periodic | Syncs `IsActive__c` (editable checkbox) with `Active__c` (formula) on Subscriptions where they have diverged. Safety net to keep these fields aligned |
-
-### Key Settings That Drive Behavior
-
-These fields on `kuga_sub__SubscriptionSetting__c` control critical behavior:
-
-| Setting Field | Values | Effect |
-|---------------|--------|--------|
-| `InitiateOrderSubscriptionManagement__c` | "Approve/Release" or "Release" | Controls WHEN Order Release fires — on approval+release or release only |
-| `ExtendContractonRenewal__c` | Checkbox | If true, Renewal orders extend existing contract end date instead of creating a new contract |
-| `AllowMultipleActiveContracts__c` | Checkbox | If true, allows multiple active contracts per account. If false, ContractTriggerHandler enforces single active contract |
-| `ContractRenewalEmailTemplateName__c` | Text | Email template API name for renewal notice emails sent by ContractRenewalNoticeBatcher |
+(The detailed trigger inventory and class-logic descriptions from v0.2.x are preserved — see Appendix A and Workflow 3 for the fields and behaviors they govern. The Order Release Trigger Map is the key diagram: Subscription creation is Order Service Line trigger only, Asset creation is Order Product Line trigger only, Renewal Opportunity creation can come from any line.)
 
 ### Order Release Trigger Map
-
-Three independent triggers drive what's created on Order Release. Crucially, **Subscriptions only come from Order Service Lines** and **Assets only come from Order Product Lines** — the two are split by line-object, not by flag alone.
 
 ```
 SUBSCRIPTION  (Order Service Line trigger only)
@@ -485,616 +304,125 @@ Product2.kuga_sub__Renewable__c
    └─ also drives the "Renewable" prefix on the Product Snapshot LWC
 ```
 
-**Separate concept — revenue classification, not Subscription creation:** `kuga_sub__Renew__c` on `OpportunityLineItem` / Quote Lines / Order Lines is a different field that classifies revenue as recurring (MRR/ARR) vs one-time (NonRecurringRevenue). It does NOT trigger Subscription creation. See **Appendix D: Renew Field Guide** for the revenue side.
-
-### kugo2p Apex Classes
-
-Below is the architectural overview of key kugo2p Apex classes.
-
-#### Core Architecture Patterns
-
-**Kontroller** — Central action router for all Visualforce/LWC button actions. Key design:
-- `Kontroller.logicPath` static variable: `'trigger'` (default) or `'controller'`. When set to `'controller'`, trigger handlers skip auto-fill logic (e.g., SalesQuoteHelper.fillSalesQuote) so the controller can manage field values directly. This prevents double-processing when records are created programmatically via buttons
-- `Director()` method routes based on `action` parameter: `createSalesQuote`, `createSalesOrder`, `createInvoice`, `updateQuoteStatus`, `updateOrderStatus`, `updateInvoiceStatus`, `deleteInvoice`, `goToPaymentTerminal`, `attachPDF`, `onlineOrderEmail`, `onlineInvoiceEmail`, `emailPaymentPDF`, `createPaymentPDF`, `emailOrderPDF`, `emailQuotePDF`, `emailInvoicePDF`, `refreshAssets`, `refreshPayment`, `cloneSalesQuote` (from updateQuoteStatus Won flow)
-- `ValidateAccountDetails(Id acctId)` — validates billing address and contact exist before quote/order creation. Called by trigger handlers too
-- Order status flow: Draft → Sent → Approved → Released → Cancelled. Special statuses: `ApproveOrderandPay` (approve + immediate payment), `Unrelease`, `CancelApproved`, `CancelReleased`
-- Quote Won flow: `updateQuoteStatusToWonAndGenerateOrder()` sets quote status to Won, then internally routes to `createSalesOrder` to auto-generate order
-
-**KugamonSyncService** — Bidirectional sync between Quotes/Orders and OpportunityLineItems. Implements `Queueable` for async processing:
-- `syncOpportunity(list<SObject>, map oldHeaders, String objType)` — static entry point called from quote/order afterUpdate triggers. Detects changes to IsPrimary, Opportunity, PriceBookName, RecordStatus, DiscountPercent. Only syncs if record is primary (`IsPrimary__c = true`) and linked to an Opportunity. Enqueues a Queueable job to process
-- `syncOppLines(list<SObject>, map oldLines, String objType, boolean isService)` — static entry point called from quote/order line afterAll triggers. Detects changes to Quantity, SalesPrice, LineDiscountPercent, ServiceDate, LineDescription, SortOrder, OpportunityLineItemId, ParentProductLine, ParentServiceLine, ConfigurationOption. Also checks "twin fields" (custom mapped fields between line types). If `HAS_KUGA_SUB`, also monitors `kuga_sub__Renew__c`, `DateServiceEnd__c`, `UnitofTerm__c`
-- `processKugamonLines()` — core sync method. Creates/upserts OpportunityLineItems from quote/order lines. Maps: Quantity, UnitPrice (calculated via getSalesPrice), Discount, ServiceDate, Description, SortOrder. Copies "twin fields" via `Util.copyFields`. If `HAS_KUGA_SUB`: syncs `Renew__c`, `DateServiceEnd__c`, `ServiceTerm__c`, `ServiceTermBehavior__c`, `UnitofTerm__c` to OLI
-- `disableOpportunitySync` static boolean — can be set to skip sync entirely
-- Lines with "Exclude from Opportunity Sync" flag are skipped (creates a Task notification)
-- Lines with Quantity = 0 are skipped (OLI doesn't support zero quantity)
-- Lines with inactive PricebookEntry are skipped
-
-**Kugamon** — Central caching/retrieval layer providing get/clear/refresh patterns for all Q2C objects: Account, Contact, Opportunity, OLI, Product2, ProductDetail, KitBundleMembers, Pricebook, PricebookEntry, SalesQuote (with all child lines), SalesOrder (with all child lines), Shipment, Invoice, Payment, AppliedPayment, ServiceDeliverySchedule, RecordType, TaxRate, VAT, AdditionalChargeCredit, EmailTemplate. This class is the data access layer — all trigger handlers and helpers query through it for caching
-
-**SecurityUtil** — All DML operations across the entire package use `SecurityUtil.stripInaccessibleFromDML()` for FLS enforcement. Delete operations check `SecurityUtil.checkObjectIsDeletable()`
-
-#### Helper Classes
-
-| Class | Key Methods |
-|-------|-------------|
-| SalesOrderHelper | `createSalesOrder` (7 overloads: from Account, Contact, Opportunity, Quote, Payment), `fillSalesOrder`, `createSalesOrderLines` (from Quote and Opportunity), `calculateServiceEndDate`, `fillKitMemberOrderLines`, `unReleaseOrder`, `cancelReleasedOrder`, `hasOrderInvoice`/`hasOrderInvoicePayments`/`hasOrderInvoicePosted`, `updateShipmentStatus`/`updateServiceDeliveryStatus`/`updateAssetStatus`/`updateOrderInvoiceStatus`/`updateOrderStatus`, `cloneSalesOrder`, `validate`, `assignPrimaryOrder`, `CreateAssets`/`UpdateAssets`/`DeleteAssets`, `handleOrderStatusUpdate`, `syncPriceBook`, `okayToUpdateReleasedOrder`, `checkProductSalesLinesSynced` |
-| SalesQuoteHelper | `createSalesQuote`, `fillSalesQuote`, `fillSalesQuoteProductLine`/`fillSalesQuoteServiceLine` (multiple overloads with tiered pricing and kit bundles), `calculateServiceEndDate` (multiple overloads), `fillKitMemberQuoteLines`, `createSalesQuoteLines`, `getDateAvailableToPromise`, `cloneSalesQuote`, `assignPrimaryQuote`, `handleQuoteStatusUpdate`, `syncPriceBook` |
-| GroupHelper | Inner classes `LineGroup` and `LineGroupMember`. `processProductOrServiceLine`/`processACCLine`/`processOptionalLine`, `createLine`, `prepareLine`/`prepare`, `upsertGroups`/`upsertLines`, `getDBGroups`, `createLineGroupMap`, `processKitBundleLine`, `assignKitBundleMembersToLines` |
-| ProductHelper | `CreateProductDetail`, `MapProductDetail`, inner classes `ProductTileData`/`Tier`/`Subscription`, `createPricebookEntryMap`, `getCurrencyCode`, `buildProductRecords`/`buildAssetRecords`/`buildSubscriptionRecords`, `getAccountIdsByHierarchy`, `setProductAccountPricingFields`, `evaluateAccountPricingFilter`, `getPricebookTieredPricing`/`getProductTieredPrice`, `setProductsInContractPricebook`, `setFavoritedProducts`, `setProductCostFields`, `validateAPD` |
-| InvoiceHelper | `createInvoiceSchedule`, `buildInvoices`, `createInvoice`, `updateInvoicedQuantities`, `updateInvoiceLineAmounts`, `fillInvoice`, `handleInvoiceStatusUpdate`, `getInvoicePOKey` |
-| PaymentHelper | `createPaymentProfile`, `createInvoicePayment`/`createOrderPayment`/`createAccountPayment`, `matchKugamonPayment`, `applyInvoicePayments`/`applyOrderPayments`, `applyPaymentsToLines`, `deleteInProcessPayments` |
-| AccountHelper | `MapAccountDetail` (creates/upserts AdditionalAccountDetail from Account), `updateAccountBalance_Batch`, `isPersonAccount` |
-| Util | Type conversion, URL/string processing, record type lookup (`getRecordType`), field copy (`copyFields`), sort, multi-currency helpers, email, error handling, `getTwinFields` (custom field mapping between objects) |
-
-#### kugo2p Trigger Handler Behaviors
-
-##### SalesQuoteTriggerHandler
-- **beforeInsert**: Validates pricebook (must have PBE entries matching quote currency). Assigns currency from Pricebook if multi-currency. Generates `OnlineApprovalKey__c` random string. Checks `Kontroller.logicPath` — if `'trigger'` (manual creation), calls `SalesQuoteHelper.fillSalesQuote` to auto-fill defaults
-- **afterInsert**: Copies OpportunityLineItems to quote lines via `SalesQuoteHelper.createSalesQuoteLines`. Calls `SalesQuoteHelper.assignPrimaryQuote` to set IsPrimary
-- **beforeUpdate**: Contact address sync — when ContactBilling/ContactShipping changes, copies Contact's Mailing address → BillTo fields, Other address → ShipTo fields. Discount cascade — when `DiscountPercent__c` changes, recalculates `LineDiscountAmount__c` on ALL child service and product lines. Currency enforcement — prevents currency change if child lines exist. Pricebook validation — prevents pricebook change if child lines exist
-- **afterUpdate**: Cascades ContactShipping, Carrier, Warehouse, Opportunity changes to all child lines. Calls `KugamonSyncService.syncOpportunity` for opportunity sync. Calls `SalesQuoteHelper.handleQuoteStatusUpdate` on status changes
-
-##### SalesQuoteServiceLineTriggerHandler
-- **beforeInsert**: Fills kit bundle member details from KitBundleMember records. Assigns auto-incrementing SortOrder via aggregate MAX query. Validates pricebook (checks PBE exists for the product, including kit member validation). If `Kontroller.logicPath == 'trigger'` (manual creation): auto-fills ServiceName from APD, calculates ServiceEndDate from ServiceTerm, applies "% of Unit Price" logic, enforces currency match with parent quote
-- **afterAll** (insert/update/delete/undelete): Creates kit bundle member lines (both service and product members from KBM records). Rolls up Tax, Discount, VAT amounts to quote header. Syncs kit header quantity changes to member lines. Calls `KugamonSyncService.syncOppLines` for opportunity sync
-- **beforeDelete**: Prevents deletion of required kit bundle members. Cascade deletes child kit members
-
-##### SalesQuoteProductLineTriggerHandler
-- **beforeInsert**: Assigns SortOrder. Validates pricebook (including kit bundle member validation via APD/KBM queries). If `Kontroller.logicPath == 'trigger'`: fills product line defaults, enforces currency match
-- **afterAll**: Creates kit bundle member lines (can create BOTH product AND service member lines from product header). Tax/Discount/VAT roll-up to quote header. Kit quantity sync. Calls `KugamonSyncService.syncOppLines`
-- **beforeDelete**: Prevents required kit member deletion. Cascade deletes child products AND child services
-
-**Cross-trigger coordination:** `TriggerHelper.passedPricebookValidation` static flag prevents duplicate pricebook validation when both product and service line triggers fire in the same transaction
-
-##### SalesOrderTriggerHandler
-- **beforeInsert**: Validates pricebook, assigns currency. Generates OnlineApprovalKey. If `logicPath == 'trigger'`: calls `SalesOrderHelper.fillSalesOrder`
-- **beforeUpdate**: Contact address sync (same pattern as quote). Discount cascade. Currency/pricebook enforcement. Validates `okayToUpdateReleasedOrder` for released orders. Calls `SalesOrderHelper.handleOrderStatusUpdate`
-- **afterInsert/afterUpdate**: Copies OLI/quote lines to order lines. Assigns primary order. Cascades ContactShipping/Carrier/Warehouse/Opportunity changes to child lines. Calls `KugamonSyncService.syncOpportunity`
-- **beforeDelete/afterDelete**: Validates no invoices exist before deletion. Cleans up related records
-
-##### SalesOrderServiceLineTriggerHandler
-- **beforeInsert**: Fills kit bundle member details. Assigns SortOrder. Validates pricebook. If `logicPath == 'trigger'`: fills service name, calculates end date, applies pricing, enforces currency
-- **afterAll**: Kit member creation, tax/discount/VAT roll-up, kit quantity sync, opp line sync via KugamonSyncService
-- **beforeDelete**: Prevents required kit member deletion, cascade delete
-
-##### SalesOrderProductLineTriggerHandler
-- **beforeInsert**: Assigns SortOrder. Validates pricebook. If `logicPath == 'trigger'`: fills product defaults, enforces currency
-- **afterAll**: Kit member creation (both product and service members), roll-ups, kit quantity sync, opp line sync
-- **beforeDelete**: Prevents required kit member deletion, cascade delete
-
-##### OpportunityTriggerHandler
-- **beforeInsert**: `setOpportunityPricebook` — if Opportunity has no Pricebook but has an Account with AdditionalAccountDetail, auto-assigns the pricebook from AAD.PricebookName
-- **afterUpdate**: `handleClosedLostOpportunity` — when opportunity stage changes to a "Closed Lost" stage name (configurable via `Kugamon.closedLostOppStageNames`): if `AutoClosedLostQuote__c` setting is true, sets all Draft/Sent quotes to "Lost". If `AutoCancelOrder__c` setting is true, sets all Draft/Sent orders to "Cancelled"
-
-##### AccountTriggerHandler
-- **afterInsert/afterUpdate**: `updateAdditionalAccountDetails` — auto-creates or updates `AdditionalAccountDetail__c` (AAD) record for the account. Syncs Account.Name → AAD.Name. For Person Accounts: sets AAD.Name to FirstName + LastName. Syncs CurrencyIsoCode changes. Uses `AccountHelper.hasTriggerExecuted` static flag to prevent recursion
-
-##### Product2TriggerHandler
-- **afterInsert/afterUpdate**: `updateAPDs` — auto-creates or updates `AdditionalProductDetail__c` (APD) from Product2. Syncs IsActive, Name, ProductCode, Description, Family, QuantityUnitOfMeasure, CurrencyIsoCode. Uses `TriggerHelper.productUpdated` to prevent recursion with APD trigger
-- **beforeUpdate**: Validates Kit/Bundle integrity — blocks product deactivation if product is a member of an active Kit/Bundle. Blocks product activation if it's a Kit/Bundle header with inactive members
-- **beforeDelete**: Cascade deletes APD and TieredPricing records. If product has quote/order/invoice references, blocks deletion with error suggesting deactivation instead
-
-##### AdditionalProductDetailTriggerHandler
-- **beforeInsert/beforeDelete/afterUndelete**: `validateDuplicateAPD` — enforces exactly one APD per Product2. Blocks duplicate creation, blocks deletion if it's the only APD, blocks undelete if another APD already exists
-- **beforeUpdate**: Syncs `ConfigurationMethod__c == 'Kit/Bundle'` → sets `KitBundle__c = true`. Validates Kit/Bundle integrity (same active/inactive member checks as Product2). When changing `Service__c` from false to true on a Kit/Bundle, deletes product-type KitBundleMembers (service kits can't have product members). Calls `ProductHelper.validateAPD`
-- **afterUpdate**: Syncs APD field changes back to Product2 (IsActive, Name, ProductCode, Description, Family, UnitOfMeasure, CurrencyIsoCode). Uses `TriggerHelper.productUpdated` to prevent recursion
-
-##### InvoiceTriggerHandler
-- **beforeInsert**: Sets `DatePosted__c` if `IsPosted__c` is true. Generates `OnlineApprovalKey__c`. Validates `AddOnlinePaymentDetailsinPDF__c` against checkout configuration. Links to AdditionalAccountDetail
-- **beforeUpdate**: Calls `InvoiceHelper.handleInvoiceStatusUpdate`. Recalculates `InvoiceDueDate__c` when `InvoiceDate__c` changes (adds `DaysTillPaymentDue__c` from AAD). Contact address sync (BillTo from MailingAddress, ShipTo from OtherAddress). Multi-currency enforcement — blocks currency change if child lines exist. Updates AAD.ContactBilling if previously null
-- **afterInsert/afterUpdate**: Cascades invoice RecordStatus changes to all child InvoiceLine records. Updates Account balance via `AccountHelper.updateAccountBalance_Batch` when Account, AAD, BalanceDueAmount, or RecordStatus changes
-- **afterDelete**: Updates Account balance for deleted invoice's account
-
-##### InvoiceLineTriggerHandler
-- **beforeInsert**: Assigns currency from parent invoice. Assigns auto-incrementing SortOrder
-- **beforeUpdate**: Assigns currency from parent invoice
-- **afterAll** (insert/update/delete/undelete): Updates invoiced quantities on order lines via `InvoiceHelper.updateInvoicedQuantities`. Rolls up line amounts to invoice header via `InvoiceHelper.updateInvoiceLineAmounts`. On insert: deletes disabled shipment lines/shipments
-- **beforeDelete**: Blocks deletion if invoice line is assigned to an Order or Order Line (unless `InvoiceHelper.ignoreInvoiceLineDeleteValidation` is set)
-
-### ManageContractController (LWC Controller)
-
-The only kuga_sub Apex controller with `@AuraEnabled` methods:
-
-| Method | Purpose |
-|--------|---------|
-| `getActiveContracts(accountId)` | Retrieves active contracts with child subscriptions and assets. Builds chart data for contract visualization. Calculates MRR trending by comparing renewal opp MRR vs contract MRR → returns up/down/neutral indicator |
+**Separate concept — revenue classification, not Subscription creation:** `kuga_sub__Renew__c` on `OpportunityLineItem` / Quote Lines / Order Lines classifies revenue as recurring (MRR/ARR) vs one-time (NonRecurringRevenue). It does NOT trigger Subscription creation. See **Appendix D: Renew Field Guide**.
 
 ---
 
 ## Workflow 1: Quote Creation
 
-### Step 0: Create Opportunity and Line Items (If Needed)
-
-#### Creating the Opportunity
-
-**Required Fields:**
-- `Name` — e.g., "Acme Corp - Annual Subscription"
-- `StageName` — "Qualification" by default
-- `CloseDate` — Expected close date
-- `AccountId` — Required for Kugamon
-- `Pricebook2Id` — Required if adding products
-
-**Optional:** `Amount`, `Type`, `RecordTypeId` (match to quote type)
-
-#### Creating Opportunity Line Items
-
-**Always use `PricebookEntryId`** (not Product2Id).
-
-##### If HAS_KUGA_SUB = true:
-
-**CRITICAL:** Always set `kuga_sub__Renew__c`:
-- `true` → recurring (subscriptions, support) → revenue flows to MRR/ARR
-- `false` → one-time (hardware, implementation) → revenue flows to NonRecurringRevenue
-
-```javascript
-// Recurring
-{ "OpportunityId": "006xxx", "PricebookEntryId": "01uxxx", "Quantity": 1,
-  "UnitPrice": 2000, "kuga_sub__Renew__c": true,
-  "kuga_sub__ServiceTerm__c": 12, "kuga_sub__UnitofTerm__c": "Month" }
-
-// One-time
-{ "OpportunityId": "006xxx", "PricebookEntryId": "01uxxx", "Quantity": 1,
-  "UnitPrice": 15000, "kuga_sub__Renew__c": false }
-```
-
-##### If HAS_KUGA_SUB = false:
-
-No Renew field. Line separation uses `kugo2p__AdditionalProductDetail__c.kugo2p__Service__c`:
-- `Service = true` → Quote Service Lines
-- `Service = false` → Quote Product Lines
-
-### Step 1: Pre-Creation Validation
-
-**Billing Address:**
-```sql
-SELECT Id, Name, BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry
-FROM Account WHERE Id = '<account_id>'
-```
-All billing fields must be populated. If missing, ask user and update account.
-
-**Contact:**
-```sql
-SELECT Id, Name, Email, Phone FROM Contact
-WHERE AccountId = '<account_id>' AND Email != null LIMIT 10
-```
-At least one contact required. Ask which one for the quote.
-
-**Opportunity:**
-
-If HAS_KUGA_SUB = true:
-```sql
-SELECT Id, Name, AccountId, Amount, StageName, CloseDate, Pricebook2Id, RecordType.Name,
-       kuga_sub__MonthlyRecurringRevenue__c, kuga_sub__AnnualContractValueInitial__c,
-       kuga_sub__TotalContractValue__c, kuga_sub__AnnualRecurringRevenueCommitted__c,
-       kuga_sub__NonRecurringRevenue__c
-FROM Opportunity WHERE Id = '<opportunity_id>'
-```
-
-If HAS_KUGA_SUB = false:
-```sql
-SELECT Id, Name, AccountId, Amount, StageName, CloseDate, Pricebook2Id, RecordType.Name
-FROM Opportunity WHERE Id = '<opportunity_id>'
-```
-
-**Existing Quotes:**
-```sql
-SELECT Id, Name, kugo2p__QuoteName__c, kugo2p__TotalAmount__c, kugo2p__IsPrimary__c
-FROM kugo2p__SalesQuote__c WHERE kugo2p__Opportunity__c = '<opportunity_id>'
-```
-
-### Step 2: Create the Quote
-
-**Createable fields:**
-- `RecordTypeId` — dynamically queried, matched to opportunity type
-- `kugo2p__Account__c`, `kugo2p__Opportunity__c`
-- `kugo2p__QuoteName__c` — descriptive name
-- `kugo2p__Pricebook2Id__c` — must match opportunity pricebook
-- `kugo2p__ContactBuying__c` — **REQUIRED**
-- `kugo2p__ContactBilling__c`, `kugo2p__ContactShipping__c` — optional
-- `kugo2p__IsPrimary__c` — true if no other primary
-- `kugo2p__DateOfferValidThrough__c` — default 30 days
-
-**Never set:** `Name` (auto-generated), `kugo2p__Status__c` (workflow), `kugo2p__TotalAmount__c` / `kugo2p__SubtotalAmount__c` / `kugo2p__NetAmount__c` (calculated).
-
-### Step 3: Verify Quote
-
-```sql
-SELECT Id, Name, kugo2p__QuoteName__c, kugo2p__TotalAmount__c, kugo2p__SubtotalAmount__c,
-       kugo2p__Status__c, kugo2p__IsPrimary__c, kugo2p__DateOfferValidThrough__c
-FROM kugo2p__SalesQuote__c WHERE Id = '<quote_id>'
-```
-
-```sql
--- Service Lines
-SELECT Id, kugo2p__Line__c, kugo2p__ServiceName__c, kugo2p__Quantity__c,
-       kugo2p__SalesPrice__c, kugo2p__TotalAmount__c
-FROM kugo2p__SalesQuoteServiceLine__c
-WHERE kugo2p__SalesQuote__c = '<quote_id>' ORDER BY kugo2p__Line__c
-
--- Product Lines
-SELECT Id, kugo2p__Line__c, kugo2p__Product__r.Name, kugo2p__Quantity__c,
-       kugo2p__SalesPrice__c, kugo2p__TotalAmount__c
-FROM kugo2p__SalesQuoteProductLine__c
-WHERE kugo2p__SalesQuote__c = '<quote_id>' ORDER BY kugo2p__Line__c
-```
-
-### Step 4: Amount Interpretation
-
-If HAS_KUGA_SUB = true:
-- Compare `kugo2p__TotalAmount__c` to `kuga_sub__AnnualContractValueInitial__c` or `kuga_sub__TotalContractValue__c`
-- `Amount` field likely represents MRR, not ACV
-
-If HAS_KUGA_SUB = false:
-- Compare `kugo2p__TotalAmount__c` to `Amount`
-
-Always show all amount fields in summary.
-
----
+Flow: validate billing address + contact on Account → verify Opportunity (and its amount fields, honoring the Pipeline Forecasting Rule above) → look for existing primary quote → create `kugo2p__SalesQuote__c` with required fields (RecordTypeId dynamically queried, Account, Opportunity, Pricebook, `ContactBuying__c` REQUIRED). Never set auto-managed fields (`Name`, `Status__c`, totals). Lines insert as `SalesQuoteProductLine__c` or `SalesQuoteServiceLine__c` based on `APD.kugo2p__Service__c`. When `HAS_KUGA_SUB = true`, OpportunityLineItems need `kuga_sub__Renew__c` set.
 
 ## Workflow 2: Order Management
 
-Orders are created from quotes, typically via the Kugamon UI "Create Order" action.
-
-### Key Fields on kugo2p__SalesOrder__c
-
-- `kugo2p__Account__c`, `kugo2p__Opportunity__c`, `kugo2p__SalesQuote__c`
-- `kugo2p__Pricebook2Id__c`, `RecordTypeId`
-- `kugo2p__ContactBuying__c`, `kugo2p__ContactBilling__c`, `kugo2p__ContactShipping__c`
-- `kugo2p__DateOrdered__c`
-
-**Auto-managed:** `Name`, `kugo2p__Status__c`, `kugo2p__TotalAmount__c`, etc.
-
-### Order Line Items
-
-Same separation as quotes:
-- `kugo2p__SalesOrderServiceLine__c` — recurring service lines
-- `kugo2p__SalesOrderProductLine__c` — one-time product lines
-
-### Querying Orders
-
-```sql
-SELECT Id, Name, kugo2p__Account__r.Name, kugo2p__Status__c,
-       kugo2p__TotalAmount__c, kugo2p__DateOrdered__c, kugo2p__SalesQuote__r.Name
-FROM kugo2p__SalesOrder__c WHERE kugo2p__Opportunity__c = '<opportunity_id>'
-```
-
----
+Orders are created from quotes via the Kugamon UI "Create Order" action. Key fields on `kugo2p__SalesOrder__c`: Account, Opportunity, SalesQuote, Pricebook, RecordType, contact fields, DateOrdered. Line items split into `SalesOrderServiceLine__c` and `SalesOrderProductLine__c` by APD Service flag.
 
 ## Workflow 3: Order Release (HAS_KUGA_SUB = true only)
 
-**This is the critical subscription lifecycle handoff.** When an order is "released," kuga_sub triggers create downstream records based on checkbox flags on the order.
+When an order is "released," kuga_sub triggers create downstream records.
 
-### Order Release Checkboxes
+### Order Release Checkboxes (on `kugo2p__SalesOrder__c`)
 
 | Field | What It Creates |
-|-------|----------------|
-| `kuga_sub__GenerateContract__c` | Standard Contract record linked to the order |
-| `kuga_sub__GenerateAsset__c` | Asset records for trackable products/services |
-| `kuga_sub__GenerateSubscription__c` | `kuga_sub__Subscription__c` records for renewable items |
-| `kuga_sub__GenerateRenewalOpportunity__c` | Renewal Opportunity for next term |
+|---|---|
+| `kuga_sub__GenerateContract__c` | Contract |
+| `kuga_sub__GenerateAsset__c` | Assets (only from Order Product Lines, when APD `kugo2p__CreateAsset__c = true`) |
+| `kuga_sub__GenerateSubscription__c` | Subscriptions (only from Order Service Lines, when `Track__c = true`) |
+| `kuga_sub__GenerateRenewalOpportunity__c` | Renewal Opportunity (from any line whose product has `kuga_sub__Renewable__c = true`) |
 
 ### What Gets Created
 
-**Contract** (`Contract` standard object):
-- Linked to order via `kuga_sub__ContractNumber__c` on the order
-- Populated with contacts from order (`kuga_sub__ContactBuying__c`, etc.)
-- Subscription records roll up to contract (ARR, MRR, counts, dates)
-- `kuga_sub__Effective__c` formula indicates if contract is currently active
-
-**Assets** (`Asset` standard object):
-- Created from **Order Product Lines** (`kugo2p__SalesOrderProductLine__c`) when the related APD has `kugo2p__CreateAsset__c = true`
-- **Order Service Lines never generate Assets** — only Order Product Lines do
-- Linked to contract via `kuga_sub__ContractNumber__c`
-- Note on namespace: `kugo2p__CreateAsset__c` is in the `kugo2p` namespace, on APD — not `kuga_sub`, not on Product2
-
-**Subscriptions** (`kuga_sub__Subscription__c`):
-- Created from **Order Service Lines** (`kugo2p__SalesOrderServiceLine__c`) when `kuga_sub__Track__c = true` on the line — usually propagated from `Product2.kuga_sub__Track__c` (label: "Create Subscription")
-- **Order Product Lines never generate Subscriptions**, regardless of any flag
-- `kuga_sub__Renew__c` on the line item is for revenue classification (MRR/ARR vs one-time), **not** Subscription creation (see Appendix D)
-- Key fields: Account, Contract, Order, Service, Quantity, MRR, ARR, Start/End dates, Status
-- Linked to parent asset via `kuga_sub__ParentAsset__c`
-- Roll up to Contract (ARR, MRR, counts, dates)
-
-**Renewal Opportunity**:
-- Created when `Product2.kuga_sub__Renewable__c = true` for any line on the released order
-- Populated with `kuga_sub__ParentContract__c` and `kuga_sub__ParentOrder__c` references
-- Close date based on contract end date
-- `kuga_sub__RenewalPriceUpliftPercent__c` carries forward for price adjustments
-
-### Querying Order Release Results
-
-```sql
--- Contract created from order
-SELECT Id, ContractNumber, Status, StartDate, EndDate,
-       kuga_sub__Effective__c, kuga_sub__AnnualRecurringRevenue__c,
-       kuga_sub__MonthlyRecurringRevenue__c, kuga_sub__TotalSubscriptionCount__c
-FROM Contract WHERE Id IN (
-  SELECT kuga_sub__ContractNumber__c FROM kugo2p__SalesOrder__c WHERE Id = '<order_id>'
-)
-
--- Subscriptions from order
-SELECT Id, Name, kuga_sub__Account__r.Name, kuga_sub__Service__r.Name,
-       kuga_sub__Quantity__c, kuga_sub__MRR__c, kuga_sub__ARR__c,
-       kuga_sub__StartDate__c, kuga_sub__EndDate__c, kuga_sub__Status__c,
-       kuga_sub__ContractNumber__r.ContractNumber
-FROM kuga_sub__Subscription__c WHERE kuga_sub__Order__c = '<order_id>'
-
--- Assets from order
-SELECT Id, Name, Product2.Name, Quantity, Status,
-       kuga_sub__ContractNumber__r.ContractNumber, kuga_sub__ParentSubscription__r.Name
-FROM Asset WHERE kuga_sub__ContractNumber__c IN (
-  SELECT kuga_sub__ContractNumber__c FROM kugo2p__SalesOrder__c WHERE Id = '<order_id>'
-)
-
--- Renewal Opportunity
-SELECT Id, Name, StageName, CloseDate, Amount,
-       kuga_sub__ParentContract__r.ContractNumber, kuga_sub__ParentOrder__r.Name
-FROM Opportunity WHERE kuga_sub__ParentOrder__c = '<order_id>'
-```
+- **Contract** — linked to the order via `kuga_sub__ContractNumber__c`; contacts copied per `UpdateContractContacts__c`; subscriptions roll up ARR/MRR/counts/dates; `kuga_sub__Effective__c` formula flags currently-active contracts.
+- **Assets** — created **only** from Order Product Lines when `kugo2p__AdditionalProductDetail__c.kugo2p__CreateAsset__c = true`. **Order Service Lines never generate Assets.** APD field is in the `kugo2p` namespace, not `kuga_sub`, and not on Product2.
+- **Subscriptions** — created **only** from Order Service Lines when `kuga_sub__Track__c = true` on the line (usually propagated from `Product2.kuga_sub__Track__c`, label: "Create Subscription"). **Order Product Lines never generate Subscriptions.** `kuga_sub__Renew__c` on the line is for revenue classification only (see Appendix D), not Subscription creation.
+- **Renewal Opportunity** — created when `Product2.kuga_sub__Renewable__c = true` for any line on the released order; sets `kuga_sub__ParentContract__c` / `kuga_sub__ParentOrder__c`; close date from contract end date; `kuga_sub__RenewalPriceUpliftPercent__c` carries forward.
 
 ### Product2 (and APD) Flags for Order Release
 
-Three independent flags control what gets created on Order Release, and **each is keyed off a different Order Line object**:
-
-| Field | Object | Effect on Order Release |
-|-------|--------|--------|
-| `kuga_sub__Track__c` (label: "Create Subscription") | `Product2` | When `true` AND the line is on an **Order Service Line** (`APD.Service__c = true`): the Order Service Line trigger generates a Subscription. Ignored on Order Product Lines. |
-| `kugo2p__CreateAsset__c` | `kugo2p__AdditionalProductDetail__c` (APD) | When `true` AND the line is on an **Order Product Line** (`APD.Service__c = false`): the Order Product Line trigger generates an Asset. Ignored on Order Service Lines. |
-| `kuga_sub__Renewable__c` | `Product2` | When `true` on any line's product (service or product): triggers Renewal Opportunity creation on release. Also drives the "Renewable" prefix on the Product Snapshot LWC label. |
-| `kuga_sub__RenewalProduct__c` | `Product2` | Substitute product used on renewal quotes |
-| `kuga_sub__UpliftRenewalPrice__c` | `Product2` | Apply renewal price uplift percentage |
-
----
+| Field | Object | Effect |
+|---|---|---|
+| `kuga_sub__Track__c` (label: "Create Subscription") | `Product2` | When `true` AND the line lands on an **Order Service Line** (`APD.Service__c = true`): Order Service Line trigger generates a Subscription. Ignored on Order Product Lines. |
+| `kugo2p__CreateAsset__c` | `kugo2p__AdditionalProductDetail__c` (APD) | When `true` AND the line lands on an **Order Product Line** (`APD.Service__c = false`): Order Product Line trigger generates an Asset. Ignored on Order Service Lines. |
+| `kuga_sub__Renewable__c` | `Product2` | When `true` on any line's product: triggers Renewal Opportunity creation. Also drives the "Renewable" prefix on the Product Snapshot LWC label. |
+| `kuga_sub__RenewalProduct__c` | `Product2` | Substitute product used on renewal quotes. |
+| `kuga_sub__UpliftRenewalPrice__c` | `Product2` | Apply renewal price uplift percentage. |
 
 ## Workflow 4: Subscription & Contract Management
 
-### Querying Active Contracts
-
 ```sql
-SELECT Id, ContractNumber, Account.Name, Status, StartDate, EndDate,
-       kuga_sub__Effective__c, kuga_sub__AnnualRecurringRevenue__c,
-       kuga_sub__MonthlyRecurringRevenue__c, kuga_sub__TotalSubscriptionCount__c,
-       kuga_sub__SubscriptionStartDate__c, kuga_sub__SubscriptionEndDate__c,
-       kuga_sub__RenewalOpportunity__r.Name
+SELECT Id, ContractNumber, Account.Name, kuga_sub__Effective__c,
+       kuga_sub__AnnualRecurringRevenue__c, kuga_sub__MonthlyRecurringRevenue__c,
+       kuga_sub__TotalSubscriptionCount__c, kuga_sub__SubscriptionStartDate__c,
+       kuga_sub__SubscriptionEndDate__c, kuga_sub__RenewalOpportunity__r.Name
 FROM Contract WHERE kuga_sub__Effective__c = true AND AccountId = '<account_id>'
-```
 
-### Querying Subscriptions
-
-```sql
 SELECT Id, Name, kuga_sub__Service__r.Name, kuga_sub__Quantity__c,
-       kuga_sub__MRR__c, kuga_sub__ARR__c, kuga_sub__PurchasePrice__c,
-       kuga_sub__StartDate__c, kuga_sub__EndDate__c, kuga_sub__Status__c,
-       kuga_sub__Renew__c, kuga_sub__Active__c
-FROM kuga_sub__Subscription__c
-WHERE kuga_sub__ContractNumber__c = '<contract_id>'
+       kuga_sub__MRR__c, kuga_sub__ARR__c, kuga_sub__StartDate__c, kuga_sub__EndDate__c,
+       kuga_sub__Status__c, kuga_sub__Renew__c, kuga_sub__Active__c
+FROM kuga_sub__Subscription__c WHERE kuga_sub__ContractNumber__c = '<contract_id>'
 ORDER BY kuga_sub__Service__r.Name
 ```
 
-### Renewal Automation
+Renewal automation: `ContractRenewalNoticeBatcher` sends renewal emails N days before contract end; `RenewalOrderBatcher` creates renewal orders N days before end.
 
-kuga_sub provides automated renewal:
-1. **Renewal Notice Email** — sent N days before contract end
-2. **Renewal Order Auto-Creation** — order created N days before end
+## Workflow 5-7: Invoice / Payment / Shipment
 
----
-
-## Workflow 5: Invoice Management
-
-```sql
-SELECT Id, Name, kugo2p__Account__r.Name, kugo2p__Status__c,
-       kugo2p__TotalAmount__c, kugo2p__AmountDue__c, kugo2p__DateInvoice__c, kugo2p__DateDue__c
-FROM kugo2p__KugamonInvoice__c WHERE kugo2p__Account__c = '<account_id>'
-ORDER BY kugo2p__DateInvoice__c DESC
-```
-
-### Invoice Lines
-```sql
-SELECT Id, kugo2p__Description__c, kugo2p__Quantity__c, kugo2p__UnitPrice__c, kugo2p__TotalAmount__c
-FROM kugo2p__KugamonInvoiceLine__c WHERE kugo2p__KugamonInvoice__c = '<invoice_id>'
-```
-
-### Invoice Scheduling
-```sql
-SELECT Id, kugo2p__SalesOrder__r.Name, kugo2p__Frequency__c, kugo2p__NextInvoiceDate__c
-FROM kugo2p__InvoiceSchedule__c WHERE kugo2p__SalesOrder__c = '<order_id>'
-```
-
----
-
-## Workflow 6: Payment Management
-
-### Payment Gateways
-Kugamon supports Stripe, Authorize.Net, PayPal, and eWay via `kugo2p__Processor_Connection__c`.
-
-```sql
-SELECT Id, Name, RecordType.Name, kugo2p__Active__c
-FROM kugo2p__Processor_Connection__c WHERE kugo2p__Active__c = true
-```
-
-### Payment Profiles
-```sql
-SELECT Id, Name, RecordType.Name, kugo2p__Account__r.Name, kugo2p__Active__c
-FROM kugo2p__Payment_Profile__c WHERE kugo2p__Account__c = '<account_id>'
-```
-
-### Payments
-```sql
-SELECT Id, Name, kugo2p__Amount__c, kugo2p__Status__c, kugo2p__DatePayment__c
-FROM kugo2p__PaymentX__c WHERE kugo2p__Account__c = '<account_id>'
-ORDER BY kugo2p__DatePayment__c DESC
-```
-
-### Applied Payments
-```sql
-SELECT Id, kugo2p__PaymentX__r.Name, kugo2p__KugamonInvoice__r.Name, kugo2p__Amount__c
-FROM kugo2p__AppliedPayment__c WHERE kugo2p__PaymentX__c = '<payment_id>'
-```
-
----
-
-## Workflow 7: Shipment & Fulfillment
-
-```sql
-SELECT Id, Name, kugo2p__Status__c, kugo2p__SalesOrder__r.Name,
-       kugo2p__Carrier__r.Name, kugo2p__TrackingNumber__c, kugo2p__DateShipped__c
-FROM kugo2p__Shipment__c WHERE kugo2p__SalesOrder__c = '<order_id>'
-```
+Invoices: `kugo2p__KugamonInvoice__c` + `kugo2p__KugamonInvoiceLine__c` (note: invoice-line currency fields are formulas that inherit 6-decimal precision from the parent order line — see Appendix A). Payment gateways via `kugo2p__Processor_Connection__c` (Stripe, Authorize.Net, PayPal, eWay). Shipments via `kugo2p__Shipment__c` + `kugo2p__ShipmentLine__c`.
 
 ---
 
 ## Product Setup
 
-### AdditionalProductDetail (kugo2p__AdditionalProductDetail__c)
-Extended metadata auto-created by Product2Trigger. Key fields:
-- `kugo2p__Service__c` — **CRITICAL when HAS_KUGA_SUB = false**: product vs. service classification
-- `kugo2p__Taxable__c`, `kugo2p__Configurable__c`, `kugo2p__Kit__c`
+### AdditionalProductDetail (`kugo2p__AdditionalProductDetail__c`, aka APD)
+
+Extended per-product metadata auto-created by `Product2Trigger`. Key fields:
+- `kugo2p__Service__c` — **CRITICAL** when `HAS_KUGA_SUB = false`: product vs service classification; also decides which Order line object each line lands on, which in turn decides whether Subscription or Asset creation can fire.
+- `kugo2p__CreateAsset__c` — drives Asset creation on Order Release (Order Product Lines only).
+- `kugo2p__PriceScale__c`, `kugo2p__QuantityScale__c`, `kugo2p__ServiceTermScale__c` — v11.0 picklists for per-product decimal precision. See "Decimal Price Precision" at top.
+- `kugo2p__Taxable__c`, `kugo2p__Configurable__c`, `kugo2p__Kit__c`.
 
 ### Setup Types
 
-Every product in Kugamon resolves to one of six **Setup types** based on three independent flags on the `Product2` and `kugo2p__AdditionalProductDetail__c` (APD) records. Knowing which type a product is determines how it flows through quote, order, fulfillment, and (if `kuga_sub` is installed) subscription lifecycles.
+Every product resolves to one of six Setup types based on independent flags:
 
-#### Driver fields
-
-| Field | Object | Effect on Setup type |
-|---|---|---|
-| `kugo2p__Service__c` | `kugo2p__AdditionalProductDetail__c` | Switches the whole classification between **Service** and **Product** branches |
-| `kugo2p__DefaultServiceTerm__c` | `kugo2p__AdditionalProductDetail__c` | Numeric term for services. Defaults to `1` when blank |
-| `kugo2p__UnitofTerm__c` | `kugo2p__AdditionalProductDetail__c` | Picklist (Day / Week / Month / Year) — the unit appended after the term for services |
-| `kugo2p__DisableShipments__c` | `kugo2p__AdditionalProductDetail__c` | Products only. `false` (default) → "Shippable" applies. `true` → no shipment is generated on order release |
-| `kuga_sub__Renewable__c` | `Product2` | Drives the "Renewable" label prefix in the Product Snapshot LWC. Also triggers Renewal Opportunity creation on Order Release. **Does not create a Subscription.** |
-| `kuga_sub__Track__c` (label: "Create Subscription") | `Product2` | Drives Subscription creation **via the Order Service Line trigger** — only when the line lands on `kugo2p__SalesOrderServiceLine__c` (i.e. `Service__c = true`). Not reflected in the Setup label. |
-| `kugo2p__CreateAsset__c` | `kugo2p__AdditionalProductDetail__c` (APD) | Drives Asset creation **via the Order Product Line trigger** — only when the line lands on `kugo2p__SalesOrderProductLine__c` (i.e. `Service__c = false`). **Services do not create Assets.** Not reflected in the Setup label. |
-
-> **Label vs behavior:** The Setup label only reflects `Service__c`, `DefaultServiceTerm__c` / `UnitofTerm__c`, `DisableShipments__c`, and `Renewable__c`. Subscription and Asset creation are governed by `Track__c` and `CreateAsset__c` — and crucially, **the two are split by line-object**: Subscriptions only come from Order Service Lines, Assets only from Order Product Lines. So a Service line never creates an Asset, and a Product line never creates a Subscription — no matter what the flags say.
-
-#### The six Setup types
-
-| # | Setup type (example) | `Service__c` | `DisableShipments__c` | `Renewable__c` (Product2) | kuga_sub installed |
+| # | Setup type | `Service__c` | `DisableShipments__c` | `Renewable__c` | kuga_sub installed |
 |---|---|---|---|---|---|
-| 1 | `12 Month Service` | `true` | n/a | `false` or n/a | optional |
-| 2 | `Renewable 12 Month Service` | `true` | n/a | `true` | **required** |
+| 1 | `{Term} {Unit} Service` | `true` | n/a | `false` or n/a | optional |
+| 2 | `Renewable {Term} {Unit} Service` | `true` | n/a | `true` | required |
 | 3 | `Product` | `false` | `true` | `false` or n/a | optional |
 | 4 | `Shippable Product` | `false` | `false` / blank | `false` or n/a | optional |
-| 5 | `Renewable Product` | `false` | `true` | `true` | **required** |
-| 6 | `Renewable Shippable Product` | `false` | `false` / blank | `true` | **required** |
+| 5 | `Renewable Product` | `false` | `true` | `true` | required |
+| 6 | `Renewable Shippable Product` | `false` | `false` / blank | `true` | required |
 
-The `{Term}` portion in rows 1 and 2 is `DefaultServiceTerm__c` (or `1` when blank). The `{Unit}` is the `UnitofTerm__c` picklist value — typically `Day`, `Week`, `Month`, or `Year`. So `1 Year Service`, `30 Day Service`, `Renewable 6 Month Service`, etc. are all valid variations of types 1 and 2.
+**Rule**: if `Renewable__c = true`, label starts with "Renewable"; `Service__c = true` ends with `{Term} {Unit} Service`; otherwise it's `Product` (DisableShipments = true) or `Shippable Product` (DisableShipments = false).
 
-#### The rule in plain English
+**Label vs behavior**: The Setup label only reflects Service, DefaultServiceTerm/UnitofTerm, DisableShipments, and Renewable. Subscription and Asset creation are governed by `Track__c` and `CreateAsset__c` — and the two are split by line-object: Subscriptions only from Order Service Lines, Assets only from Order Product Lines.
 
-1. If `kuga_sub` is installed **and** `Product2.kuga_sub__Renewable__c` is `true`, the type starts with `Renewable`.
-2. If `APD.kugo2p__Service__c` is `true`, the type ends with `{Term} {Unit} Service`. Otherwise (it's a product):
-   - If `APD.kugo2p__DisableShipments__c` is `true`, the type ends with `Product`.
-   - Else the type ends with `Shippable Product`.
+**Downstream creation** (Order Release):
 
-#### What each type implies downstream
-
-Subscription creation is **Order Service Line only**. Asset creation is **Order Product Line only**. They never mix.
-
-| Setup type | On Order Release creates… |
+| Setup type | Creates |
 |---|---|
-| `{Term} {Unit} Service` | Order Service Line. + Subscription if `Product2.kuga_sub__Track__c = true`. (No Asset — services never create Assets.) |
+| `{Term} {Unit} Service` | Order Service Line + Subscription if `Track__c = true`. (No Asset — services never create Assets.) |
 | `Renewable {Term} {Unit} Service` | Order Service Line + **Renewal Opportunity**. + Subscription if `Track__c = true`. (No Asset.) |
-| `Product` | Order Product Line. + Asset if APD `kugo2p__CreateAsset__c = true`. (No Subscription — products never create Subscriptions.) |
+| `Product` | Order Product Line + Asset if APD `CreateAsset__c = true`. (No Subscription — products never create Subscriptions.) |
 | `Shippable Product` | Order Product Line + Shipment. + Asset if APD `CreateAsset__c = true`. (No Subscription.) |
 | `Renewable Product` | Order Product Line + **Renewal Opportunity**. + Asset if APD `CreateAsset__c = true`. (No Subscription.) |
 | `Renewable Shippable Product` | Order Product Line + Shipment + **Renewal Opportunity**. + Asset if APD `CreateAsset__c = true`. (No Subscription.) |
-
-### Kit/Bundle (kugo2p__KitBundleMember__c)
-```sql
-SELECT Id, kugo2p__Product__r.Name, kugo2p__Quantity__c, kugo2p__Required__c
-FROM kugo2p__KitBundleMember__c WHERE kugo2p__KitBundle__c = '<kit_product_id>'
-```
-
-### Product Configuration
-```sql
-SELECT Id, Name, kugo2p__Product__r.Name FROM kugo2p__ConfigurationGroup__c
-WHERE kugo2p__Product__c = '<product_id>' ORDER BY kugo2p__SortOrder__c
-
-SELECT Id, kugo2p__OptionProduct__r.Name, kugo2p__Required__c, kugo2p__Default__c
-FROM kugo2p__ConfigurationOption__c WHERE kugo2p__ConfigurationGroup__c = '<group_id>'
-```
-
-### Tiered Pricing
-```sql
-SELECT Id, kugo2p__FromQuantity__c, kugo2p__ToQuantity__c, kugo2p__Price__c
-FROM kugo2p__Tier__c WHERE kugo2p__TieredPricing__c = '<tiered_pricing_id>'
-ORDER BY kugo2p__FromQuantity__c
-```
-
-### Account-Specific Pricing
-```sql
-SELECT Id, kugo2p__Account__r.Name, kugo2p__Product__r.Name, kugo2p__Price__c, kugo2p__Discount__c
-FROM kugo2p__AccountPricing__c WHERE kugo2p__Account__c = '<account_id>'
-```
-
----
-
-## Tax Configuration
-
-### US Sales Tax
-```sql
-SELECT Id, Name, kugo2p__State__c, kugo2p__County__c, kugo2p__City__c
-FROM kugo2p__TaxLocation__c WHERE kugo2p__State__c = '<state>'
-
-SELECT Id, kugo2p__TaxLocation__r.Name, kugo2p__Rate__c, kugo2p__EffectiveDate__c
-FROM kugo2p__TaxRate__c WHERE kugo2p__TaxLocation__c = '<location_id>'
-```
-
-### International VAT
-```sql
-SELECT Id, Name, kugo2p__Country__c FROM kugo2p__VAT__c
-SELECT Id, kugo2p__VAT__r.Name, kugo2p__Rate__c FROM kugo2p__VATRate__c WHERE kugo2p__VAT__c = '<vat_id>'
-```
-
-### Tax Exemption
-```sql
-SELECT Id, kugo2p__TaxExempt__c, kugo2p__TaxExemptNumber__c
-FROM kugo2p__AdditionalAccountDetail__c WHERE kugo2p__Account__c = '<account_id>'
-```
 
 ---
 
 ## Consistency Checking and Synchronization
 
-**CRITICAL:** When updating quotes OR opportunity line items, ALWAYS check for consistency and synchronize both sides unless explicitly told not to.
-
-### What to Compare
-
-| Field | Quote Line | Opportunity Line |
-|-------|-----------|-----------------|
-| Product/Service | `kugo2p__ServiceName__c` / `kugo2p__Product__r.Name` | `Product2.Name` |
-| Quantity | `kugo2p__Quantity__c` | `Quantity` |
-| Unit Price | `kugo2p__SalesPrice__c` | `UnitPrice` |
-| Start Date | `kugo2p__DateServiceStart__c` | `ServiceDate` |
-
-If HAS_KUGA_SUB = true, also compare Term and End Date.
-
-**Default:** Update BOTH sides when either changes. Skip sync only if user explicitly says so.
+When updating quotes OR opportunity line items, ALWAYS check for consistency and synchronize both sides unless explicitly told not to. Compare: Product/Service, Quantity, Unit Price, Start Date (and Term/End Date when HAS_KUGA_SUB). Default: update both sides.
 
 ---
 
 ## Common Issues
 
-**Quote total vs. Amount mismatch:**
-If HAS_KUGA_SUB = true: `Amount` may be MRR; compare to `kuga_sub__AnnualContractValueInitial__c`.
-If HAS_KUGA_SUB = false: Quote total should match opportunity line item sum.
-
-**ACV double-counting (HAS_KUGA_SUB only):**
-Products with `kuga_sub__Renew__c = false` but non-zero MRR/ARR → double-counted.
-Fix: Set `kuga_sub__Renew__c = true` on recurring line items.
-
-**Line items not auto-populating:**
-Check BOTH `SalesQuoteProductLine__c` and `SalesQuoteServiceLine__c`. If HAS_KUGA_SUB = false, verify `kugo2p__AdditionalProductDetail__c.kugo2p__Service__c`.
-
-**Order Release not creating contracts/subscriptions:**
-Verify checkboxes: `kuga_sub__GenerateContract__c`, `kuga_sub__GenerateSubscription__c`, etc. Also check Product2 flags: `kuga_sub__Renewable__c`, `kuga_sub__Track__c`.
-
-**kuga_sub fields don't exist:**
-Set `HAS_KUGA_SUB = false`. Use `kugo2p__AdditionalProductDetail__c.kugo2p__Service__c` instead.
-
-**Missing billing address / No contact:** Must be resolved before quote creation.
+- **Quote total vs. Amount mismatch**: HAS_KUGA_SUB=true → `Amount` may be MRR, compare to `kuga_sub__AnnualContractValueInitial__c`. HAS_KUGA_SUB=false → Quote total should match OLI sum.
+- **ACV double-counting**: Products with `kuga_sub__Renew__c = false` but non-zero MRR/ARR. Fix: set Renew = true on recurring lines.
+- **Line items not populating**: check both ProductLine and ServiceLine; verify APD.Service__c.
+- **Order Release not creating contracts/subscriptions**: verify Order Release checkboxes AND the Product2/APD flags.
+- **Missing billing address / contact**: must be resolved before quote creation.
 
 ---
 
@@ -1102,306 +430,114 @@ Set `HAS_KUGA_SUB = false`. Use `kugo2p__AdditionalProductDetail__c.kugo2p__Serv
 
 ### Opportunity Fields
 
-#### Required Fields
+Required: `Name`, `StageName`, `CloseDate`. Strongly recommended: `AccountId`, `Pricebook2Id`. Optional: `Amount`, `Type`, `RecordTypeId`.
 
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `Name` | Text(120) | Opportunity name |
-| `StageName` | Picklist | Current stage (use "Qualification" when creating with quote) |
-| `CloseDate` | Date | Expected close date |
+**kuga_sub fields on Opportunity** (HAS_KUGA_SUB only):
+- Roll-up SUMs: `kuga_sub__MonthlyRecurringRevenue__c`, `kuga_sub__AnnualRecurringRevenueCommitted__c`, `kuga_sub__NonRecurringRevenue__c`, `kuga_sub__Amount__c`, `kuga_sub__DateRequired__c`, `kuga_sub__ServiceDateExpires__c`.
+- Formulas: `kuga_sub__AnnualContractValueInitial__c` (ACV = NonRecurring + ARR), `kuga_sub__TotalContractValue__c`, `kuga_sub__AnnualRecurringRevenueForecast__c` (MRR x 12), `kuga_sub__ExpectedRevenue__c`, `kuga_sub__OpportunityAmount__c`, `kuga_sub__ContractEndDate__c`, `kuga_sub__ParentContractEndDate__c`.
+- Editable: `kuga_sub__ParentContract__c`, `kuga_sub__ParentOrder__c`, `kuga_sub__AutoEmailRenewalOrder__c`, `kuga_sub__AutoRenewedOrder__c`, `kuga_sub__RenewalOrderAutoCreationDate__c`, `kuga_sub__RenewalPriceUpliftPercent__c`.
 
-#### Strongly Recommended Fields
+### OpportunityLineItem
 
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `AccountId` | Lookup(Account) | Required for Kugamon Quote to Cash to work properly |
-| `Pricebook2Id` | Lookup(Pricebook2) | Required if adding opportunity products |
+Required: `OpportunityId`, `PricebookEntryId`, `Quantity`. Standard optional: `UnitPrice`, `ServiceDate`, `Discount`, `Description`.
 
-#### Optional Fields
+**kuga_sub fields** (HAS_KUGA_SUB only, editable): `kuga_sub__Renew__c` (CRITICAL), `kuga_sub__ServiceTerm__c`, `kuga_sub__UnitofTerm__c`, `kuga_sub__ServiceTermBehavior__c`, `kuga_sub__NonUpliftSalesPrice__c`. Calculated: `kuga_sub__MRR__c`, `kuga_sub__ARR__c`, `kuga_sub__NonRecurringRevenue__c`, `kuga_sub__NetAmount__c`, `kuga_sub__TotalAmount__c`, `kuga_sub__ListAmount__c`, `kuga_sub__DateServiceEnd__c`, `kuga_sub__Service__c`, `kuga_sub__LineTerm__c`, `kuga_sub__DiscountSalesPrice__c`, `kuga_sub__EffectiveDiscount__c`, `kuga_sub__UpliftRenewalPrice__c`.
 
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `Amount` | Currency | Auto-calculated from line items if products exist |
-| `Type` | Picklist | E.g., "New Business", "Existing Business" |
-| `RecordTypeId` | Lookup(RecordType) | Map to quote record type (New/Renewal/Expansion) |
+### Quote (`kugo2p__SalesQuote__c`)
 
-#### kuga_sub Fields on Opportunity (HAS_KUGA_SUB = true only)
+Createable: `RecordTypeId`, `kugo2p__Account__c`, `kugo2p__Opportunity__c`, `kugo2p__QuoteName__c`, `kugo2p__Pricebook2Id__c`, `kugo2p__ContactBuying__c` (REQUIRED), `kugo2p__ContactBilling__c`, `kugo2p__ContactShipping__c`, `kugo2p__IsPrimary__c`, `kugo2p__DateOfferValidThrough__c`.
 
-**Roll-Up Summary Fields (read-only, calculated from line items):**
+kuga_sub on Quote: `kuga_sub__ContractNumber__c`, `kuga_sub__ContractEndDate__c` (formula).
 
-| Field API Name | Description |
-|----------------|-------------|
-| `kuga_sub__MonthlyRecurringRevenue__c` | SUM of line item MRR |
-| `kuga_sub__AnnualRecurringRevenueCommitted__c` | SUM of line item ARR |
-| `kuga_sub__NonRecurringRevenue__c` | SUM of line item non-recurring revenue |
-| `kuga_sub__Amount__c` | SUM of line item amounts |
-| `kuga_sub__DateRequired__c` | MIN of line item service dates |
-| `kuga_sub__ServiceDateExpires__c` | MAX of line item end dates |
+Auto-managed (never set): `Name` (`SQ-{YYMMDD}-{0000000}` — see Appendix E), `kugo2p__Status__c`, `kugo2p__TotalAmount__c`, `kugo2p__SubtotalAmount__c`, `kugo2p__NetAmount__c`.
 
-**Formula Fields (read-only):**
+### Order (`kugo2p__SalesOrder__c`)
 
-| Field API Name | Description | Formula |
-|----------------|-------------|---------|
-| `kuga_sub__AnnualContractValueInitial__c` | ACV | NonRecurring + ARR |
-| `kuga_sub__TotalContractValue__c` | TCV | Net amount from primary quote/order |
-| `kuga_sub__AnnualRecurringRevenueForecast__c` | ARR forecast | MRR x 12 |
-| `kuga_sub__ExpectedRevenue__c` | Expected revenue | Amount x Probability |
-| `kuga_sub__OpportunityAmount__c` | Opp amount | Formula |
-| `kuga_sub__ContractEndDate__c` | Contract end date | From parent contract |
-| `kuga_sub__ParentContractEndDate__c` | Parent contract end | From parent contract |
+kuga_sub Order Release controls: `kuga_sub__GenerateContract__c`, `kuga_sub__GenerateAsset__c`, `kuga_sub__GenerateSubscription__c`, `kuga_sub__GenerateRenewalOpportunity__c`, `kuga_sub__ContractNumber__c`, `kuga_sub__ParentContract__c`, `kuga_sub__RenewalOpportunity__c`, `kuga_sub__UpdateContractContacts__c`.
 
-**Editable Fields:**
+### Order Line kuga_sub Fields
 
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `kuga_sub__ParentContract__c` | Lookup(Contract) | Parent contract (for renewals) |
-| `kuga_sub__ParentOrder__c` | Lookup(Order) | Parent order (for renewals) |
-| `kuga_sub__AutoEmailRenewalOrder__c` | Checkbox | Auto-email renewal order |
-| `kuga_sub__AutoRenewedOrder__c` | Lookup(Order) | Auto-created renewal order |
-| `kuga_sub__RenewalOrderAutoCreationDate__c` | Date | When renewal order auto-creates |
-| `kuga_sub__RenewalPriceUpliftPercent__c` | Percent | Price uplift % for renewal |
+| Field | On Object | Description |
+|---|---|---|
+| `kuga_sub__Renew__c` | Service & Product Lines | Revenue classification (recurring vs one-time). See Appendix D. Does NOT create Subscription. |
+| `kuga_sub__Track__c` (label: "Create Subscription") | Service & Product Lines | Creates Subscription on Order Release **only when on an Order Service Line** (`kugo2p__SalesOrderServiceLine__c`). Propagated from `Product2.kuga_sub__Track__c`. Ignored on Order Product Lines. |
 
-### OpportunityLineItem Fields
+Asset creation is driven by APD `kugo2p__CreateAsset__c`, only on Order Product Lines.
 
-#### Required Fields
+### Subscription (`kuga_sub__Subscription__c`)
 
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `OpportunityId` | Lookup(Opportunity) | Parent opportunity |
-| `PricebookEntryId` | Lookup(PricebookEntry) | Links to product via pricebook |
-| `Quantity` | Number(10,2) | Minimum 1 |
-
-#### kuga_sub Fields (HAS_KUGA_SUB = true only)
-
-**Editable:**
-
-| Field API Name | Type | Description | Default |
-|----------------|------|-------------|---------|
-| `kuga_sub__Renew__c` | Checkbox | **CRITICAL**: recurring vs one-time | false |
-| `kuga_sub__ServiceTerm__c` | Number | Term length (e.g., 12, 24, 36) | |
-| `kuga_sub__UnitofTerm__c` | Picklist | "Month" or "Year" | |
-| `kuga_sub__ServiceTermBehavior__c` | Picklist | Term behavior | |
-| `kuga_sub__NonUpliftSalesPrice__c` | Currency | Pre-uplift price | |
-
-**Calculated (read-only):**
-
-| Field API Name | Description | When Renew=true | When Renew=false |
-|----------------|-------------|-----------------|------------------|
-| `kuga_sub__MRR__c` | Monthly recurring revenue | Calculated | 0 |
-| `kuga_sub__ARR__c` | Annual recurring revenue | MRR x 12 | 0 |
-| `kuga_sub__ARRForecast__c` | ARR forecast | Calculated | 0 |
-| `kuga_sub__NonRecurringRevenue__c` | One-time revenue | 0 | Line total |
-| `kuga_sub__NetAmount__c` | Net amount (formula) | After discounts | After discounts |
-| `kuga_sub__TotalAmount__c` | Total amount (formula) | Calculated | Calculated |
-| `kuga_sub__ListAmount__c` | List amount (formula) | List price total | List price total |
-| `kuga_sub__DateServiceEnd__c` | Service end date | ServiceDate + Term | |
-| `kuga_sub__Service__c` | Is service? (formula) | Formula | Formula |
-| `kuga_sub__LineTerm__c` | Term display (formula) | e.g., "12 Month" | |
-| `kuga_sub__DiscountSalesPrice__c` | Discount amount (formula) | | |
-| `kuga_sub__EffectiveDiscount__c` | Effective discount % (formula) | | |
-| `kuga_sub__UpliftRenewalPrice__c` | Uplift flag (formula) | | |
-
-#### Important Optional Fields (standard)
-
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `UnitPrice` | Currency | Override pricebook price |
-| `ServiceDate` | Date | Service start date |
-| `Discount` | Percent | Discount percentage |
-| `Description` | Text | Line item description |
-
-### Quote Fields (kugo2p__SalesQuote__c)
-
-#### Createable Fields
-
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `RecordTypeId` | Lookup(RecordType) | New/Renewal/Expansion (query dynamically) |
-| `kugo2p__Account__c` | Lookup(Account) | Required |
-| `kugo2p__Opportunity__c` | Lookup(Opportunity) | Required |
-| `kugo2p__QuoteName__c` | Text | Quote name |
-| `kugo2p__Pricebook2Id__c` | Lookup(Pricebook2) | Must match opportunity pricebook |
-| `kugo2p__ContactBuying__c` | Lookup(Contact) | **REQUIRED** buying contact |
-| `kugo2p__ContactBilling__c` | Lookup(Contact) | Optional billing contact |
-| `kugo2p__ContactShipping__c` | Lookup(Contact) | Optional shipping contact |
-| `kugo2p__IsPrimary__c` | Checkbox | Primary quote flag |
-| `kugo2p__DateOfferValidThrough__c` | Date | Expiration (default: 30 days) |
-
-#### kuga_sub Fields on Quote
-
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `kuga_sub__ContractNumber__c` | Lookup(Contract) | Linked contract (renewals) |
-| `kuga_sub__ContractEndDate__c` | Formula(Date) | Contract end date |
-
-#### Auto-Managed Fields (Never Set)
-
-| Field | Description |
-|-------|-------------|
-| `Name` | Auto-generated quote number (format `SQ-{YYMMDD}-{0000000}`) — see Appendix E for full naming conventions and sample-data rules |
-| `kugo2p__Status__c` | Workflow-managed |
-| `kugo2p__TotalAmount__c` | Calculated from lines |
-| `kugo2p__SubtotalAmount__c` | Calculated |
-| `kugo2p__NetAmount__c` | Calculated |
-
-### Quote Line Item Objects
-
-#### Service Lines (kugo2p__SalesQuoteServiceLine__c)
-
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `kugo2p__SalesQuote__c` | Lookup | Parent quote |
-| `kugo2p__ServiceName__c` | Text | Service name |
-| `kugo2p__Quantity__c` | Number | Quantity |
-| `kugo2p__SalesPrice__c` | Currency | Unit price |
-| `kugo2p__TotalAmount__c` | Currency | Line total |
-| `kugo2p__Line__c` | Formula | Line number |
-| `kugo2p__DateServiceStart__c` | Date | Service start |
-| `kugo2p__DateServiceEnd__c` | Date | Service end |
-| `kugo2p__ServiceTerm__c` | Number | Term length |
-| `kuga_sub__Renew__c` | Checkbox | Renewable (HAS_KUGA_SUB only) |
-
-#### Product Lines (kugo2p__SalesQuoteProductLine__c)
-
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `kugo2p__SalesQuote__c` | Lookup | Parent quote |
-| `kugo2p__Product__c` | Lookup | Product reference |
-| `kugo2p__Quantity__c` | Number | Quantity |
-| `kugo2p__SalesPrice__c` | Currency | Unit price |
-| `kugo2p__TotalAmount__c` | Currency | Line total |
-| `kugo2p__Line__c` | Formula | Line number |
-| `kuga_sub__Renew__c` | Checkbox | Renewable (HAS_KUGA_SUB only) |
-
-### Order Fields (kugo2p__SalesOrder__c)
-
-#### kuga_sub Fields — Order Release Controls (HAS_KUGA_SUB only)
-
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `kuga_sub__GenerateContract__c` | Checkbox | Create Contract on release |
-| `kuga_sub__GenerateAsset__c` | Checkbox | Create Assets on release |
-| `kuga_sub__GenerateSubscription__c` | Checkbox | Create Subscriptions on release |
-| `kuga_sub__GenerateRenewalOpportunity__c` | Checkbox | Create Renewal Opp on release |
-| `kuga_sub__ContractNumber__c` | Lookup(Contract) | Generated contract |
-| `kuga_sub__ParentContract__c` | Lookup(Contract) | Parent contract (renewals) |
-| `kuga_sub__RenewalOpportunity__c` | Lookup(Opportunity) | Generated renewal opp |
-| `kuga_sub__UpdateContractContacts__c` | Multi-Select | Which contacts to update |
-
-#### Order Line kuga_sub Fields
-
-| Field API Name | Type | On Object | Description |
-|----------------|------|-----------|-------------|
-| `kuga_sub__Renew__c` | Checkbox | Service & Product Lines | Revenue classification (recurring vs one-time). See Appendix D. Does NOT create Subscription. |
-| `kuga_sub__Track__c` (label: "Create Subscription") | Checkbox | Service & Product Lines | Creates Subscription on Order Release **only when on an Order Service Line** (`kugo2p__SalesOrderServiceLine__c`). Propagated from `Product2.kuga_sub__Track__c`. Ignored on Order Product Lines. |
-
-Asset creation is separate — driven by `kugo2p__AdditionalProductDetail__c.kugo2p__CreateAsset__c` (on APD), and only **Order Product Lines** (`kugo2p__SalesOrderProductLine__c`) generate Assets. Order Service Lines never generate Assets.
-
-### Subscription Fields (kuga_sub__Subscription__c)
-
-| Field API Name | Type | Updateable | Description |
-|----------------|------|------------|-------------|
-| `Name` | String | No | Auto-generated |
-| `kuga_sub__Account__c` | Lookup(Account) | No | Account |
-| `kuga_sub__ContractNumber__c` | Lookup(Contract) | No | Parent contract |
-| `kuga_sub__Order__c` | Lookup(SalesOrder) | Yes | Source order |
-| `kuga_sub__OrderServiceLine__c` | Lookup | Yes | Source order line |
-| `kuga_sub__Service__c` | Lookup(Product2) | Yes | Product/service |
-| `kuga_sub__Quantity__c` | Number | Yes | Quantity |
-| `kuga_sub__PurchasePrice__c` | Currency | Yes | Unit price |
-| `kuga_sub__MRR__c` | Currency | Yes | Monthly recurring revenue |
-| `kuga_sub__ARR__c` | Currency | Yes | Annual recurring revenue |
-| `kuga_sub__NetAmount__c` | Currency | Yes | Net amount |
-| `kuga_sub__TotalAmount__c` | Currency | Yes | Total amount |
-| `kuga_sub__StartDate__c` | Date | Yes | Start date |
-| `kuga_sub__EndDate__c` | Date | Yes | End date |
-| `kuga_sub__Status__c` | Picklist | Yes | Status |
-| `kuga_sub__Renew__c` | Checkbox | No | Is renewable |
-| `kuga_sub__Active__c` | Checkbox | No | Is active (read-only) |
-| `kuga_sub__IsActive__c` | Checkbox | Yes | Is active (editable) |
-| `kuga_sub__ParentAsset__c` | Lookup(Asset) | Yes | Parent asset |
-| `kuga_sub__ParentSubscription__c` | Lookup(Subscription) | Yes | Parent subscription |
-| `kuga_sub__ServiceTerm__c` | Number | No | Service term |
-| `kuga_sub__UnitofTerm__c` | String | No | Unit of term |
-| `kuga_sub__OrderRecordType__c` | String | No | Order record type |
+Key fields: `Name` (auto), `kuga_sub__Account__c`, `kuga_sub__ContractNumber__c`, `kuga_sub__Order__c`, `kuga_sub__OrderServiceLine__c`, `kuga_sub__Service__c` (Product2), `kuga_sub__Quantity__c`, `kuga_sub__PurchasePrice__c`, `kuga_sub__MRR__c`, `kuga_sub__ARR__c`, `kuga_sub__NetAmount__c`, `kuga_sub__TotalAmount__c`, `kuga_sub__StartDate__c`, `kuga_sub__EndDate__c`, `kuga_sub__Status__c`, `kuga_sub__Renew__c`, `kuga_sub__Active__c`, `kuga_sub__IsActive__c`, `kuga_sub__ParentAsset__c`, `kuga_sub__ParentSubscription__c`, `kuga_sub__ServiceTerm__c`, `kuga_sub__UnitofTerm__c`.
 
 ### Contract kuga_sub Fields
 
-#### Roll-Up Summary Fields (read-only)
-
-| Field API Name | Description |
-|----------------|-------------|
-| `kuga_sub__AnnualRecurringRevenue__c` | SUM of subscription ARR |
-| `kuga_sub__MonthlyRecurringRevenue__c` | SUM of subscription MRR |
-| `kuga_sub__TotalSubscriptionAmount__c` | SUM of subscription amounts |
-| `kuga_sub__TotalSubscriptionCount__c` | COUNT of subscriptions |
-| `kuga_sub__TotalSubscriptionQuantity__c` | SUM of subscription quantities |
-| `kuga_sub__SubscriptionStartDate__c` | MIN start date |
-| `kuga_sub__SubscriptionEndDate__c` | MAX end date |
-
-#### Editable Fields
-
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `kuga_sub__RenewalOpportunity__c` | Lookup(Opportunity) | Renewal opportunity |
-| `kuga_sub__RenewalTerm__c` | Number | Renewal term length |
-| `kuga_sub__AutoEmailRenewalNotice__c` | Checkbox | Auto-send renewal notice |
-| `kuga_sub__AutoEmailRenewalOrder__c` | Checkbox | Auto-send renewal order |
-| `kuga_sub__Pricebook2Id__c` | Lookup(Pricebook) | Pricebook for renewals |
-| `kuga_sub__ContactBuying__c` | Lookup(Contact) | Buying contact |
-| `kuga_sub__ContactBilling__c` | Lookup(Contact) | Billing contact |
-| `kuga_sub__ContactShipping__c` | Lookup(Contact) | Shipping contact |
-| `kuga_sub__Expanded__c` | Checkbox | Has been expanded |
-| `kuga_sub__LastRenewalNoticeSentDate__c` | Date | Last renewal notice date |
-
-#### Formula Fields
-
-| Field API Name | Description |
-|----------------|-------------|
-| `kuga_sub__Effective__c` | Is contract currently active |
-| `kuga_sub__ContractRenewalNoticeDate__c` | When renewal notice should send |
-| `kuga_sub__SendRenewalNoticeToday__c` | Should notice send today |
-| `kuga_sub__AnnualRecurringRevenueForecast__c` | MRR x 12 |
+Roll-up: `kuga_sub__AnnualRecurringRevenue__c`, `kuga_sub__MonthlyRecurringRevenue__c`, `kuga_sub__TotalSubscriptionAmount__c`, `kuga_sub__TotalSubscriptionCount__c`, `kuga_sub__TotalSubscriptionQuantity__c`, `kuga_sub__SubscriptionStartDate__c`, `kuga_sub__SubscriptionEndDate__c`. Formula: `kuga_sub__Effective__c`, `kuga_sub__ContractRenewalNoticeDate__c`, `kuga_sub__SendRenewalNoticeToday__c`, `kuga_sub__AnnualRecurringRevenueForecast__c`.
 
 ### Asset kuga_sub Fields
 
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `kuga_sub__ContractNumber__c` | Lookup(Contract) | Parent contract |
-| `kuga_sub__ParentSubscription__c` | Lookup(Subscription) | Parent subscription |
-| `kuga_sub__ParentLine__c` | Formula(Text) | Parent line reference |
-| `kuga_sub__Renew__c` | Formula(Checkbox) | Is renewable |
+`kuga_sub__ContractNumber__c`, `kuga_sub__ParentSubscription__c`, `kuga_sub__ParentLine__c` (formula), `kuga_sub__Renew__c` (formula).
 
 ### Product2 kuga_sub Fields
 
-| Field API Name | Type | Description |
-|----------------|------|-------------|
-| `kuga_sub__Renewable__c` | Checkbox | Drives the "Renewable" prefix on Product setup labels AND triggers Renewal Opportunity creation on Order Release. Does NOT create a Subscription. |
-| `kuga_sub__Track__c` (label: "Create Subscription") | Checkbox | When `true` AND the line lands on an Order Service Line, the Order Service Line trigger generates a Subscription on Order Release. Order Product Lines never generate Subscriptions, regardless of this flag. |
-| `kuga_sub__RenewalProduct__c` | Lookup(Product2) | Substitute product for renewal |
-| `kuga_sub__UpliftRenewalPrice__c` | Checkbox | Apply price uplift on renewal |
+`kuga_sub__Renewable__c` (drives "Renewable" label + Renewal Opportunity creation — does NOT create Subscription), `kuga_sub__Track__c` (label "Create Subscription" — generates Subscription only on Order Service Lines), `kuga_sub__RenewalProduct__c`, `kuga_sub__UpliftRenewalPrice__c`. Asset creation is on APD, not Product2 (field `kugo2p__CreateAsset__c`, Order Product Lines only).
 
-Asset creation is separate — APD field `kugo2p__AdditionalProductDetail__c.kugo2p__CreateAsset__c` drives Asset creation, and only **Order Product Lines** generate Assets (Order Service Lines never do). Note: `kugo2p` namespace, on APD.
+### 6-Decimal Price Fields (v11.0+)
 
-### Field Interdependencies
+Stored fields widened to `Currency(12, 6)` in Kugamon Quote to Cash v11.0. Precision above 2 decimals is honored per-product via `kugo2p__AdditionalProductDetail__c.kugo2p__PriceScale__c` (picklist values observed: `4`, `5`, `6`; blank = org default).
 
-#### Opportunity Product Requirements
-1. Opportunity must have `Pricebook2Id` set
-2. Product must have a `PricebookEntry` in that pricebook
-3. Use `PricebookEntryId` (not `Product2Id`) when creating line items
+| Object | Stored 6-decimal fields |
+|---|---|
+| `kugo2p__SalesQuoteProductLine__c` | `ListPrice__c`, `SalesPrice__c`, `TierPrice__c` |
+| `kugo2p__SalesQuoteServiceLine__c` | `ListPrice__c`, `SalesPrice__c`, `NonUpliftSalesPrice__c`, `UpliftPrice__c`, `TierPrice__c` |
+| `kugo2p__SalesQuoteOptionalLine__c` | `ListPrice__c`, `SalesPrice__c` |
+| `kugo2p__SalesOrderProductLine__c` | `ListPrice__c`, `SalesPrice__c`, `TierPrice__c` |
+| `kugo2p__SalesOrderServiceLine__c` | `ListPrice__c`, `SalesPrice__c`, `NonUpliftSalesPrice__c`, `UpliftPrice__c`, `TierPrice__c` |
+| `kugo2p__AccountPricing__c` | `Price__c` |
+| `kugo2p__Tier__c` | `TierPrice__c` |
+| `Asset` | `kugo2p__PurchasePrice__c` |
 
-#### Revenue Calculation Dependencies (HAS_KUGA_SUB = true)
-1. Set `kuga_sub__Renew__c` correctly on line items
-2. For recurring: Set `ServiceTerm` and `UnitofTerm`
-3. Kugamon automation populates MRR/ARR/NonRecurring
-4. These roll up to opportunity-level fields
-5. ACV = NonRecurring + ARR
+**Formula (Currency) fields** that inherit 6-decimal precision from the stored fields they reference — these render at 6 decimals end-to-end:
 
-#### Order Release Dependencies
-1. Order line items need `kuga_sub__Renew__c` or `kuga_sub__Track__c` set
-2. OR Product2 needs `kuga_sub__Renewable__c` or `kuga_sub__Track__c`
-3. Order Generate checkboxes must be true
-4. Triggers create Contract, Assets, Subscriptions, Renewal Opportunity
+| Object | Formula fields rendering at 6 decimals |
+|---|---|
+| `kugo2p__SalesQuoteProductLine__c`, `kugo2p__SalesQuoteServiceLine__c` | `kugo2p__DiscountSalesPrice__c` (label: "Effective Price") |
+| `kugo2p__SalesOrderProductLine__c`, `kugo2p__SalesOrderServiceLine__c` | `kugo2p__DiscountSalesPrice__c` (label: "Effective Price") |
+| `kugo2p__KugamonInvoiceLine__c` | `kugo2p__SalesPrice__c` (yes, invoice line's SalesPrice is itself a formula reading back from the Order line), `kugo2p__DiscountSalesPrice__c` ("Effective Price"), `kugo2p__LineAmount__c`, `kugo2p__NetAmount__c`, `kugo2p__TotalAmount__c`, `kugo2p__TaxAmount__c`, `kugo2p__VATAmount__c`, `kugo2p__LineDiscountAmount__c`, `kugo2p__BalanceDueAmount__c` |
+
+**Fields NOT widened** (stay at 2 decimals or lower-precision stored type):
+- `kugo2p__KugamonInvoiceLine__c` **stored** currency fields (e.g. `kugo2p__AppliedPaymentAmount__c` at `Currency(16, 2)`). Invoice-line formulas above DO render at 6 decimals; the stored fields that back payments do not.
+- All payment / applied-payment amounts (`kugo2p__PaymentX__c`, `kugo2p__AppliedPayment__c`).
+- `PricebookEntry.UnitPrice`, `OpportunityLineItem.UnitPrice` (standard Salesforce 2-decimal).
+- Opportunity-level roll-ups (`kuga_sub__Amount__c`, `kuga_sub__MonthlyRecurringRevenue__c`, etc.).
+
+### Chat Objects (v11.0+)
+
+#### `kugo2p__ChatParticipant__c` — one row per authorized chatter per quote
+
+| Field API Name | Type | Updateable | Description |
+|---|---|---|---|
+| `Name` | String | No | AutoNumber: `CP-{0000000}` (e.g. `CP-0000070`). |
+| `OwnerId` | Reference | Yes | Standard Owner. |
+| `kugo2p__QuoteNumber__c` | Lookup(SalesQuote) | Yes | The quote this participant can chat on. |
+| `kugo2p__User__c` | Lookup(User) | Yes | Populated when `Type__c = 'Internal User'`. |
+| `kugo2p__Contact__c` | Lookup(Contact) | Yes | Populated when `Type__c = 'Contact'`. |
+| `kugo2p__Type__c` | String (picklist) | No | `Internal User` or `Contact`. |
+| `kugo2p__Participant__c` | String | No | HTML display link to the User or Contact record. |
+| `kugo2p__ParticipantName__c` | String | No | Display name, denormalized. |
+| `kugo2p__ParticipantKey__c` | String | Yes | Composite key `{QuoteId}-{UserOrContactId}` — enforces one participant row per person per quote. |
+| `kugo2p__Email__c` | String | No | Email of the User or Contact. |
+| `kugo2p__Title__c` | String | No | Business title. |
+| `kugo2p__LastReadMessage__c` | Lookup(ChatMessage) | Yes | The last message this participant has seen. Powers unread badge. |
+| `kugo2p__DateLastRead__c` | DateTime | Yes | When this participant last viewed the thread. |
+
+#### `kugo2p__ChatMessage__c` — one row per posted message
+
+| Field API Name | Type | Updateable | Description |
+|---|---|---|---|
+| `Name` | String | No | AutoNumber: 9-digit zero-padded sequence (e.g. `000000165`). |
+| `kugo2p__ChatParticipant__c` | Lookup(ChatParticipant) | No | The sender's participant row — reach the Quote and sender identity through this. |
+| `kugo2p__ParticipantName__c` | String | No | Sender display name, denormalized. |
+| `kugo2p__Body__c` | TextArea (rich) | Yes | HTML message body as typed. |
+| `kugo2p__BodyPreview__c` | String | Yes | Plain-text truncated preview, used in list views and notifications. |
 
 ---
 
@@ -1409,305 +545,106 @@ Asset creation is separate — APD field `kugo2p__AdditionalProductDetail__c.kug
 
 ### 🔑 Pipeline Forecasting Rule (read first)
 
-**When `HAS_KUGA_SUB = true`, use `kuga_sub__Amount__c` for all Opportunity pipeline forecasting. DO NOT use the standard `Amount` field.** This is the authoritative Roll-Up SUM field maintained by the Kugamon Subscription Management package for forecasting and pipeline reporting. See the "CRITICAL: Opportunity Pipeline Forecasting Field" section near the top of this skill for full context.
+When `HAS_KUGA_SUB = true`, use `kuga_sub__Amount__c` for all Opportunity pipeline forecasting. DO NOT use the standard `Amount` field.
 
 ### The Amount Field Problem
 
-In Salesforce orgs with subscription management, the standard `Amount` field on Opportunity can represent different values depending on configuration: Monthly Recurring Revenue (MRR), Annual Recurring Revenue (ARR), Total Contract Value (TCV), or Annual Contract Value (ACV). This creates confusion when comparing opportunity amounts to quote totals — and makes the standard `Amount` field unsuitable for pipeline forecasting. Use `kuga_sub__Amount__c` instead whenever the kuga_sub package is installed.
-
-### Subscription Amount Fields
-
-#### On Opportunity (kuga_sub__* fields)
-
-| Field API Name | Meaning | Example |
-|----------------|---------|---------|
-| `Amount` (standard) | **Do NOT use for forecasting when `HAS_KUGA_SUB = true`.** May be MRR, ACV, TCV — varies by org | $10,000 (could be monthly or annual) |
-| `kuga_sub__Amount__c` | **✅ USE THIS for pipeline forecasting.** Roll-Up SUM maintained by Kugamon | $120,000 |
-| `kuga_sub__MonthlyRecurringRevenue__c` | Monthly recurring revenue | $10,000/month |
-| `kuga_sub__AnnualContractValueInitial__c` | Annual contract value | $120,000/year |
-| `kuga_sub__TotalContractValue__c` | Total contract value | $120,000 (1-year) or $360,000 (3-year) |
-| `kuga_sub__AnnualRecurringRevenueCommitted__c` | Annual recurring revenue | $120,000/year |
-| `kuga_sub__NonRecurringRevenue__c` | One-time fees | $5,000 |
-
-#### On Quote (kugo2p__* fields)
-
-| Field API Name | Meaning |
-|----------------|---------|
-| `kugo2p__TotalAmount__c` | Total quote amount (typically annual or total contract value) |
-| `kugo2p__SubtotalAmount__c` | Subtotal before discounts/taxes |
+In subscription orgs, the standard `Amount` field on Opportunity can represent MRR, ARR, TCV, or ACV — varies by org. Use `kuga_sub__Amount__c` instead.
 
 ### Comparison Rules
 
-**When Subscription Fields Exist** (any `kuga_sub__*` fields present):
-1. Do NOT compare `kugo2p__TotalAmount__c` to `Amount`
-2. DO compare `kugo2p__TotalAmount__c` to `kuga_sub__AnnualContractValueInitial__c` (preferred) or `kuga_sub__TotalContractValue__c`
-3. Reasoning: In subscription orgs, `Amount` is often configured to show MRR, while quotes show annual/total values
+When `HAS_KUGA_SUB = true`: compare `kugo2p__TotalAmount__c` (quote) to `kuga_sub__AnnualContractValueInitial__c` or `kuga_sub__TotalContractValue__c`, not to `Amount`.
 
-**When Subscription Fields Do NOT Exist:**
-1. DO compare `kugo2p__TotalAmount__c` to `Amount`
-2. Reasoning: Without subscription management, `Amount` represents the total opportunity value
+When `HAS_KUGA_SUB = false`: compare `kugo2p__TotalAmount__c` to `Amount`.
 
-### Amount Comparison Examples
+### Best Practices
 
-**Example 1 — Subscription Org (MRR in Amount field):**
-- Opportunity `Amount`: $10,000 / `kuga_sub__MonthlyRecurringRevenue__c`: $10,000 / `kuga_sub__AnnualContractValueInitial__c`: $120,000
-- Quote `kugo2p__TotalAmount__c`: $120,000
-- Correct: Quote matches ACV ($120,000), not Amount ($10,000 MRR)
-
-**Example 2 — Subscription Org (ACV in Amount field):**
-- Opportunity `Amount`: $120,000 / `kuga_sub__AnnualContractValueInitial__c`: $120,000
-- Quote `kugo2p__TotalAmount__c`: $120,000
-- Correct: Quote matches both Amount and ACV ($120,000)
-
-**Example 3 — Non-Subscription Org:**
-- Opportunity `Amount`: $120,000 (no kuga_sub__* fields)
-- Quote `kugo2p__TotalAmount__c`: $120,000
-- Correct: Quote matches Amount ($120,000)
-
-### Amount Field Best Practices
-
-1. **For pipeline forecasting in subscription orgs (`HAS_KUGA_SUB = true`), always use `kuga_sub__Amount__c` — never the standard `Amount` field.**
-2. Always query ALL amount fields before making comparisons
-3. Check for presence of subscription fields to determine comparison strategy
-4. Show all relevant amounts in user-facing summaries
-5. Never assume what the standard `Amount` represents in a subscription org — let the data guide you
-6. Document discrepancies clearly when amounts don't match expected patterns
+1. For pipeline forecasting in subscription orgs, always use `kuga_sub__Amount__c`.
+2. Query ALL amount fields before comparing.
+3. Show all relevant amounts in user-facing summaries.
+4. Never assume what standard `Amount` represents in a subscription org.
 
 ---
 
 ## Appendix C: Record Types Guide
 
-### Dynamic Record Type Discovery
+NEVER hardcode Record Type IDs. Query dynamically from `RecordType` filtered by `SObjectType IN (kugo2p__SalesQuote__c, kugo2p__SalesOrder__c, kugo2p__Payment_Profile__c, kugo2p__Processor_Connection__c, kugo2p__Payment_Method__c, Opportunity)`.
 
-**NEVER hardcode Record Type IDs.** They vary between orgs. Always query dynamically:
-
-```sql
-SELECT Id, Name, SObjectType, DeveloperName, IsActive
-FROM RecordType
-WHERE SObjectType IN (
-  'kugo2p__SalesQuote__c',
-  'kugo2p__SalesOrder__c',
-  'kugo2p__Payment_Profile__c',
-  'kugo2p__Processor_Connection__c',
-  'kugo2p__Payment_Method__c',
-  'Opportunity'
-)
-AND IsActive = true
-ORDER BY SObjectType, Name
-```
-
-Cache results for the session and use the returned IDs.
-
-### Mapping Opportunity to Quote/Order Record Types
-
-Match by name:
-- Opportunity RecordType.Name contains "Renewal" → use Quote/Order record type named "Renewal"
-- Opportunity RecordType.Name contains "New" → use Quote/Order record type named "New Business" (or "New")
-- Opportunity RecordType.Name contains "Expansion" → use Quote/Order record type named "Expansion"
-
-If no match found, ask the user or default to "New Business."
-
-### Known Record Type Categories
-
-**Quote & Order Record Types** (names may vary by org): Renewal, New Business, Expansion
-
-**Payment Profile Record Types:** Credit Card, AuthNet Subscription, Native Subscription, PayPal Recurring Payment, PayPal Subscription, Generic Profile
-
-**Processor Connection Record Types:** Stripe, Authorize.Net, PayPal, eWay
-
-**Payment Method Record Types:** Stripe, Authorize.Net, PayPal, eWay, Salesforce.com
-
-### Record Type Notes
-
-- Some orgs may not have all record types active
-- Quote/Order record types may not exist in every org — if the query returns none, create quotes/orders without a RecordTypeId
-- Always verify returned IDs before using them in DML operations
+Map by name: Opportunity "Renewal" → Quote/Order "Renewal"; "New" → "New Business"; "Expansion" → "Expansion". Default to "New Business" if no match.
 
 ---
 
 ## Appendix D: Renew Field Guide
 
-### Overview
+`kuga_sub__Renew__c` on OpportunityLineItem is critical for revenue classification.
 
-The `kuga_sub__Renew__c` field on OpportunityLineItem is critical for proper revenue classification in Kugamon Subscription Management. It determines whether a product/service is treated as recurring or non-recurring.
+- `Renew = true` → recurring: revenue flows to `kuga_sub__MRR__c` and `kuga_sub__ARR__c`; `kuga_sub__NonRecurringRevenue__c = 0`.
+- `Renew = false` or null → one-time: revenue flows to `kuga_sub__NonRecurringRevenue__c`; MRR and ARR remain 0.
 
-### Renew Field Behavior
+Opportunity roll-ups: `kuga_sub__MonthlyRecurringRevenue__c`, `kuga_sub__AnnualRecurringRevenueCommitted__c`, `kuga_sub__NonRecurringRevenue__c`. Formula: `kuga_sub__AnnualContractValueInitial__c = NonRecurring + ARR` (double-counts if Renew is wrong).
 
-**When Renew = true:**
-- Product is treated as a recurring subscription
-- Revenue flows to `kuga_sub__MRR__c` (Monthly Recurring Revenue) and `kuga_sub__ARR__c` (Annual Recurring Revenue)
-- `kuga_sub__NonRecurringRevenue__c` = 0
+**Double-counting fix**: find products with `kuga_sub__Renew__c = false` AND `kuga_sub__ARR__c > 0` AND `kuga_sub__NonRecurringRevenue__c > 0`; set Renew = true.
 
-**When Renew = false (or null):**
-- Product is treated as non-recurring/one-time
-- Revenue flows to `kuga_sub__NonRecurringRevenue__c`
-- MRR and ARR remain 0
+**Product type guide**: Subscriptions / Support Contracts / Recurring Retainers = `true`. Hardware / Implementation / Pro Services / One-time Licenses = `false`.
 
-### Revenue Roll-Ups to Opportunity
-
-**Opportunity Line Item Fields (Source):** `kuga_sub__MRR__c`, `kuga_sub__ARR__c`, `kuga_sub__NonRecurringRevenue__c`
-
-**Opportunity Roll-Up Fields (Calculated):**
-1. `kuga_sub__MonthlyRecurringRevenue__c` — Roll-up sum of all line item MRR
-2. `kuga_sub__AnnualRecurringRevenueCommitted__c` — Roll-up sum of all line item ARR
-3. `kuga_sub__NonRecurringRevenue__c` — Roll-up sum of all line item non-recurring revenue
-4. `kuga_sub__AnnualContractValueInitial__c` — **FORMULA:** NonRecurringRevenue + AnnualRecurringRevenueCommitted (this is where double-counting occurs if Renew is set incorrectly)
-
-### Double-Counting Problem
-
-When a recurring product has `Renew = false`, the line item populates BOTH `kuga_sub__ARR__c` AND `kuga_sub__NonRecurringRevenue__c`, causing the ACV formula to count the product twice.
-
-**Wrong Configuration:**
-```
-OpportunityLineItem: "Annual Support Contract"
-- UnitPrice: $2,000/month
-- kuga_sub__Renew__c: false  ← WRONG
-- kuga_sub__ARR__c: $24,000
-- kuga_sub__NonRecurringRevenue__c: $24,000  ← Should be $0
-- ACV: $24,000 + $24,000 = $48,000  ← DOUBLE-COUNTED
-```
-
-**Correct Configuration:**
-```
-OpportunityLineItem: "Annual Support Contract"
-- UnitPrice: $2,000/month
-- kuga_sub__Renew__c: true  ← CORRECT
-- kuga_sub__ARR__c: $24,000
-- kuga_sub__NonRecurringRevenue__c: $0  ← Correct
-- ACV: $0 + $24,000 = $24,000  ← Correct
-```
-
-### Product Types Guide
-
-| Product Type | Renew Setting | Examples |
-|--------------|---------------|----------|
-| Subscriptions | `true` | SaaS licenses, recurring services |
-| Support Contracts | `true` | Standard Support, Premium Support |
-| Hardware | `false` | Servers, equipment, devices |
-| Implementation | `false` | Setup fees, onboarding, training |
-| Professional Services | `false` | Consulting hours (unless retainer) |
-| One-time Licenses | `false` | Perpetual software licenses |
-| Recurring Retainers | `true` | Monthly consulting retainers |
-
-### Troubleshooting ACV Higher Than Expected
-
-1. Query the opportunity:
-```sql
-SELECT kuga_sub__NonRecurringRevenue__c,
-       kuga_sub__AnnualRecurringRevenueCommitted__c,
-       kuga_sub__AnnualContractValueInitial__c
-FROM Opportunity WHERE Id = '<opp_id>'
-```
-
-2. If NonRecurring seems too high, check line items:
-```sql
-SELECT Id, Product2.Name, kuga_sub__Renew__c,
-       kuga_sub__MRR__c, kuga_sub__ARR__c,
-       kuga_sub__NonRecurringRevenue__c
-FROM OpportunityLineItem WHERE OpportunityId = '<opp_id>'
-```
-
-3. Look for products with ALL of: `kuga_sub__Renew__c = false`, `kuga_sub__ARR__c > 0`, and `kuga_sub__NonRecurringRevenue__c > 0`
-
-4. Fix by updating: `{ "Id": "00kxxx", "kuga_sub__Renew__c": true }`
-
-The NonRecurringRevenue will automatically recalculate to $0 via Kugamon's automation.
-
-### Technical Detail
-
-Kugamon automation calculates MRR/ARR based on product pricing and term, then populates NonRecurringRevenue based on the Renew field. When `Renew = false`, NonRecurringRevenue = line total. When `Renew = true`, NonRecurringRevenue = 0. Attempting to update `kuga_sub__NonRecurringRevenue__c` directly will be overridden — the Renew field is the source of truth.
+**Technical detail**: Kugamon automation calculates MRR/ARR from pricing + term, then sets NonRecurringRevenue based on Renew. Writing to `kuga_sub__NonRecurringRevenue__c` directly is overridden — Renew is the source of truth.
 
 ---
 
 ## Appendix E: Name Field & Sample Data Conventions
 
-When creating sample or test records in any Kugamon CPQ org, **the `Name` field is rarely user-supplied.** Most key transactional objects use **Auto Number** on Name, which means:
-
-- Salesforce assigns the value on insert.
-- The field is **not createable and not updateable** — values you pass in DML are silently ignored.
-- The format (prefix, date stamp, sequence width) is fixed by the package — you cannot override it.
-
-A hand-typed Name like `Q-001`, `Test Quote`, or `SQ-0001` in sample data is a clear sign the record was hand-crafted instead of created through the standard flow.
-
-**Rule of thumb:** Before authoring a sample record, run `get_object_fields` on the target object and read the `Name` field's `DataType`.
-
-- `Auto Number` → omit `Name` entirely from the create payload.
-- `Text(80)` → either supply a meaningful value (Group D below) or expect Kugamon Apex to overwrite whatever you supply (Group C below).
+Most key transactional objects use **Auto Number** on `Name` — Salesforce assigns the value on insert; the field is not createable or updateable; the format is fixed by the package. Before authoring a sample record, run `get_object_fields` and read the `Name` field's `DataType`.
 
 ### Group A: Auto Number, date-stamped prefix — DO NOT set Name
 
-Transactional "header" objects. Name is system-assigned in the format `{PREFIX}-{YYMMDD}-{0000000}`.
+| Object | Format | Example |
+|---|---|---|
+| `kugo2p__SalesQuote__c` | `SQ-{YYMMDD}-{0000000}` | `SQ-260519-0020461` |
+| `kugo2p__SalesOrder__c` | `SO-{YYMMDD}-{0000000}` | `SO-260521-0113570` |
+| `kugo2p__KugamonInvoice__c` | `INV-{YYMMDD}-{0000000}` | `INV-260505-0091615` |
 
-| Object API Name | Label | Name Label | Format | Example |
-|---|---|---|---|---|
-| `kugo2p__SalesQuote__c` | Quote | Quote Number | `SQ-{YYMMDD}-{0000000}` | `SQ-260519-0020461` |
-| `kugo2p__SalesOrder__c` | Order | Order Number | `SO-{YYMMDD}-{0000000}` | `SO-260521-0113570` |
-| `kugo2p__KugamonInvoice__c` | Invoice | Invoice Number | `INV-{YYMMDD}-{0000000}` | `INV-260505-0091615` |
-
-The `YYMMDD` portion is the org-local creation date of the record — not arbitrary. You cannot back-date Name by writing a fake date into it.
+The `YYMMDD` portion is the org-local creation date — cannot be back-dated.
 
 ### Group B: Auto Number, sequence only — DO NOT set Name
 
-Line items, junctions, and detail rows. Name is a zero-padded 7-digit sequence with no prefix (one exception: `ConfigurationOption__c` uses a `CO-` prefix).
-
-| Object API Name | Label | Example |
-|---|---|---|
-| `kugo2p__SalesQuoteProductLine__c` | Quote Product Line | `0098308` |
-| `kugo2p__SalesQuoteServiceLine__c` | Quote Service Line | `0043468` |
-| `kugo2p__SalesQuoteAdditionalChargeCredit__c` | Quote Additional Charge/Credit | `0009725` |
-| `kugo2p__SalesQuoteOptionalLine__c` | Quote Optional Line | `0003452` |
-| `kugo2p__SalesOrderProductLine__c` | Order Product Line | `0167453` |
-| `kugo2p__SalesOrderServiceLine__c` | Order Service Line | `0098030` |
-| `kugo2p__SalesOrderAdditionalChargeCredit__c` | Order Additional Charge/Credit | `0050596` |
-| `kugo2p__KugamonInvoiceLine__c` | Invoice Line | `0186531` |
-| `kugo2p__KugamonInvoiceAdditionalChargeCredit__c` | Invoice Additional Charge/Credit | `0008382` |
-| `kugo2p__OrderInvoiceRelationship__c` | Order/Invoice Relationship | `0077818` |
-| `kugo2p__Shipment__c` | Shipment | `0094394` |
-| `kugo2p__ShipmentLine__c` | Shipment Line | `0094394` |
-| `kugo2p__AppliedPayment__c` | Applied Payment | `0031357` |
-| `kugo2p__AdditionalProductDetail__c` | Additional Product Info | `0024014` |
-| `kugo2p__ProductCost__c` | Product Cost | `0000000` |
-| `kugo2p__ConfigurationOption__c` | Configuration Option | `CO-0000003` |
+| Object | Example |
+|---|---|
+| `kugo2p__SalesQuoteProductLine__c` | `0098308` |
+| `kugo2p__SalesQuoteServiceLine__c` | `0043468` |
+| `kugo2p__SalesQuoteAdditionalChargeCredit__c` | `0009725` |
+| `kugo2p__SalesQuoteOptionalLine__c` | `0003452` |
+| `kugo2p__SalesOrderProductLine__c` | `0167453` |
+| `kugo2p__SalesOrderServiceLine__c` | `0098030` |
+| `kugo2p__SalesOrderAdditionalChargeCredit__c` | `0050596` |
+| `kugo2p__KugamonInvoiceLine__c` | `0186531` |
+| `kugo2p__KugamonInvoiceAdditionalChargeCredit__c` | `0008382` |
+| `kugo2p__OrderInvoiceRelationship__c` | `0077818` |
+| `kugo2p__Shipment__c` | `0094394` |
+| `kugo2p__ShipmentLine__c` | `0094394` |
+| `kugo2p__AppliedPayment__c` | `0031357` |
+| `kugo2p__AdditionalProductDetail__c` | `0024014` |
+| `kugo2p__ProductCost__c` | `0000000` |
+| `kugo2p__ConfigurationOption__c` (uses `CO-` prefix) | `CO-0000003` |
+| `kugo2p__ChatMessage__c` (v11.0+) | `000000165` |
+| `kugo2p__ChatParticipant__c` (v11.0+, uses `CP-` prefix) | `CP-0000070` |
 
 ### Group C: Text(80) populated by Kugamon Apex — DO NOT set Name
 
-The field is technically writeable, but Kugamon's managed-package logic overwrites it on insert/update. Whatever you supply in sample data is wiped out.
+Field is technically writeable, but Kugamon trigger logic overwrites on insert/update:
 
-| Object API Name | What Apex writes into Name | Example |
+| Object | What Apex writes into Name | Example |
 |---|---|---|
-| `kugo2p__PaymentX__c` (Payment) | `Payment for Order <Order Number>` or `Payment for Invoice <Invoice Number>` | `Payment for Order SO-260325-0113546` |
-| `kugo2p__Payment_Method__c` (Payment Method) | `<Card Brand> (<last 4>)` from the tokenized card | `Visa (4242)` |
-| `kugo2p__AdditionalAccountDetail__c` (Additional Account Info) | Mirrors the related `Account.Name` | `Starbucks Corporation` |
+| `kugo2p__PaymentX__c` | `Payment for Order <SO#>` or `Payment for Invoice <INV#>` | `Payment for Order SO-260325-0113546` |
+| `kugo2p__Payment_Method__c` | `<Card Brand> (<last 4>)` from the tokenized card | `Visa (4242)` |
+| `kugo2p__AdditionalAccountDetail__c` | Mirrors related `Account.Name` | `Starbucks Corporation` |
 
 ### Group D: Text(80), user-supplied — DO set a meaningful Name
 
-No Apex auto-population. Sample data must include a human-readable Name. Match the conventions already in the org.
+Line groups, invoice schedules, payment profiles, additional charges/credits (reusable), product catalogs/categories, tiers, tiered pricing, carriers, warehouses, tax locations, VAT, service delivery schedules, processor connections. Match the conventions already in the org.
 
-| Object API Name | Label | Convention / examples |
-|---|---|---|
-| `kugo2p__QuoteLineGroup__c` | Quote Group Name | `Product & Service Lines`, `Product & Service Lines 3` |
-| `kugo2p__OrderLineGroup__c` | Order Group Name | `Product & Service Lines`, `Tax Testing` |
-| `kugo2p__InvoiceSchedule__c` | Schedule | `One-Time Invoicing`, `Yearly Invoicing`, `Quarterly Invoicing` |
-| `kugo2p__Payment_Profile__c` | Recurring Charge | Free text |
-| `kugo2p__AdditionalChargeCredit__c` | Additional Charge/Credit | `Standard Shipping`, `e-Commerce Tax Charge`, `$50 Coupon` |
-| `kugo2p__ProductCatalog__c` | Product Catalog | `Generator Catalog`, `Tacton Catalog`, `Subscription Catalog` |
-| `kugo2p__ProductCategory__c` | Product Category | `Generator`, `Diesel`, `Gasoline`, `Propane` |
-| `kugo2p__Tier__c` | Tier | `Volume Pricing`, `Discount Schedule` |
-| `kugo2p__TieredPricing__c` | Tiered Pricing | `Generator`, `Installation Service`, `Support Level` |
-| `kugo2p__Carrier__c` | Carrier | `FedEx`, `UPS`, `USPS`, `Delivery Van` |
-| `kugo2p__Warehouse__c` | Warehouse | `Main`, `Remote`, `Kugamon LLC` |
-| `kugo2p__TaxLocation__c` | Tax Location | `State Tax: CA`, `UK Sales Tax`, `Sweden VAT` |
-| `kugo2p__VAT__c` | VAT/GST | Country, e.g., `UK`, `Germany` |
-| `kugo2p__ServiceDeliverySchedule__c` | Service Delivery | Descriptive — `Subscription Service (Scheduled 4 Quarters)`, `SLA: Bronze w/Cost Pricing` |
-| `kugo2p__Processor_Connection__c` | Processor Connection | `PayPal Sandbox`, `Authorize.net Sandbox` |
+### Common mistakes to avoid
 
-### Common mistakes to avoid in sample data
-
-- **Don't invent your own prefix.** `Q-…`, `QT-…`, `ORD-…`, `IN-…`, `INV2-…`, `SQ-0001` (no date) are all wrong. The Quote/Order/Invoice prefix is fixed: `SQ`, `SO`, `INV`. The date is `YYMMDD` of the actual creation date. The sequence is 7 digits, zero-padded.
-- **Don't supply Name on AutoNumber objects.** Salesforce silently drops the value; the saved record will be fine, but reviewing the sample script vs. the resulting record will be confusing because the Name in the org won't match what the script said it set.
-- **Don't supply Name on Group C objects expecting it to stick.** It is overwritten by the package trigger immediately.
-- **Verify Name behavior with metadata first**, not by trial-and-error:
-  ```
-  get_object_fields(object_name='kugo2p__SalesQuote__c')
-  # Look at the Name row: DataType will say "Auto Number" or "Text(80)"
-  ```
+- Don't invent your own prefix (`Q-…`, `QT-…`, `ORD-…`, `IN-…`, `INV2-…`, `SQ-0001` without a date). Quote/Order/Invoice prefixes are fixed: `SQ`, `SO`, `INV`. The date is `YYMMDD` of actual creation. Sequence is 7 digits.
+- Don't supply `Name` on AutoNumber objects — Salesforce silently drops it.
+- Don't supply `Name` on Group C objects expecting it to stick — it's overwritten.
+- Verify Name behavior with `get_object_fields` first.
