@@ -11,7 +11,7 @@ All notable changes to this repository are documented here. This project loosely
 - `kugamon-full-qtc-submgmt` skill — documents two new Kugamon Quote to Cash v11.0 feature areas:
 
   **1. Decimal price precision (6 decimals)**
-  - New top-level section `## Decimal Price Precision (kugo2p v11.0+)` in `SKILL.md` listing every field widened to `Currency(12, 6)` and spelling out which objects were NOT widened (invoice line, payments, PricebookEntry, OpportunityLineItem, Opportunity roll-ups).
+  - New top-level section `## Decimal Price Precision (kugo2p v11.0+)` in `SKILL.md` listing every stored field widened to `Currency(12, 6)` and the **Formula (Currency)** fields that inherit 6-decimal precision from the stored fields they reference — including `kugo2p__DiscountSalesPrice__c` (label: "Effective Price") on quote lines, order lines, AND invoice lines, plus the full set of invoice-line formulas (`SalesPrice`, `LineAmount`, `NetAmount`, `TotalAmount`, `TaxAmount`, `VATAmount`, `LineDiscountAmount`, `BalanceDueAmount`). Clarifies that invoice-line **stored** currency fields (payments, applied-payment amount) stay at 2 decimals; the 6 decimals reach invoices via formulas, not stored fields. Also spells out what was NOT widened (payments, PricebookEntry, OpportunityLineItem, Opportunity roll-ups).
   - New Appendix A sub-section `### 6-Decimal Price Fields (v11.0+)` with the authoritative field matrix:
     - `kugo2p__SalesQuoteProductLine__c` — `ListPrice__c`, `SalesPrice__c`, `TierPrice__c`
     - `kugo2p__SalesQuoteServiceLine__c` — `ListPrice__c`, `SalesPrice__c`, `NonUpliftSalesPrice__c`, `UpliftPrice__c`, `TierPrice__c`
@@ -21,9 +21,10 @@ All notable changes to this repository are documented here. This project loosely
     - `kugo2p__AccountPricing__c` — `Price__c`
     - `kugo2p__Tier__c` — `TierPrice__c`
     - `Asset` — `kugo2p__PurchasePrice__c`
+  - Plus Formula (Currency) fields that inherit precision from the above: `DiscountSalesPrice__c` ("Effective Price") on quote/order/invoice lines; `SalesPrice__c`, `LineAmount__c`, `NetAmount__c`, `TotalAmount__c`, `TaxAmount__c`, `VATAmount__c`, `LineDiscountAmount__c`, `BalanceDueAmount__c` on invoice lines.
   - Documents the new `kugo2p__PriceScale__c` picklist on `kugo2p__AdditionalProductDetail__c` (observed values `4`, `5`, `6`; blank = org default) and its sibling picklists `kugo2p__QuantityScale__c` and `kugo2p__ServiceTermScale__c`.
   - Updates Object Model Overview APD entry to flag the new scale picklists.
-  - SOQL / DML guidance: do not round 6-decimal fields client-side; invoice-line math stays at 2 decimals; opportunity amount roll-ups continue at their native precision.
+  - SOQL / DML guidance: do not round 6-decimal fields client-side; opportunity amount roll-ups continue at their native precision.
 
   **2. 2-way Quote Chat**
   - New `## Workflow 8: 2-way Quote Chat (kugo2p v11.0+)` section covering the full data model:
@@ -44,7 +45,7 @@ All notable changes to this repository are documented here. This project loosely
 
 ### Verification
 
-- Tooling-API `FieldDefinition` queries against the `kugamon.dev` org confirmed every 6-decimal field on every object listed above.
+- Tooling-API `FieldDefinition` queries against the `kugamon.dev` org confirmed every 6-decimal stored field and every Formula (Currency) field on every object listed above.
 - Live `kugo2p__ChatParticipant__c` and `kugo2p__ChatMessage__c` records in `kugamon.dev` confirmed the Type picklist values (`Internal User`, `Contact`), the composite ParticipantKey format, the HTML body / plain preview split, and the sequence formats (`CP-0000070`, `000000165`).
 - Cross-referenced the Kugamon v11.0 "What's New" change log at https://help.kugamon.com/s/article/kugamon-quote-to-cash (sandbox push 10/02/2026, production push 10/16/2026).
 
@@ -52,7 +53,7 @@ All notable changes to this repository are documented here. This project loosely
 
 - Docs-only change in `kugamon-skills` — the behavior change lives in the Kugamon Quote to Cash v11.0 package itself.
 - README unchanged — the current README has no per-skill version row to bump.
-- Frontmatter and CHANGELOG bumped in the same commit.
+- The SKILL.md v0.3.0 content ships in a follow-on commit on the same date.
 
 ## [0.2.7] — 2026-05-24
 
@@ -83,150 +84,4 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [0.2.6] — 2026-05-24
 
-### Fixed
-
-- **`kugamon-full-qtc-submgmt` skill — major Product2 / line-level field-semantics correction.** Multiple sections previously conflated three independent Order Release triggers. The corrected mappings are:
-  - `Product2.kuga_sub__Track__c` (label: "Create Subscription") — generates a Subscription on Order Release, **but only for Services** (`APD.kugo2p__Service__c = true`). Products never generate Subscriptions, regardless of any flag.
-  - `Product2.kuga_sub__Renewable__c` — triggers **Renewal Opportunity** creation on Order Release (NOT Subscription). Also drives the "Renewable" prefix on the Product Snapshot LWC setup label.
-  - `kugo2p__AdditionalProductDetail__c.kugo2p__CreateAsset__c` — drives **Asset** creation on Order Release. Note: `kugo2p` namespace, on APD (not `kuga_sub`, not on Product2).
-  - Line-level `kuga_sub__Track__c` (Order Line, Quote Line, OLI) — same "Create Subscription" semantics; propagated from `Product2.kuga_sub__Track__c`.
-  - Line-level `kuga_sub__Renew__c` — revenue classification only (recurring MRR/ARR vs one-time NonRecurringRevenue). Does NOT create Subscriptions. See Appendix D.
-
-### Sections updated
-
-- `## Object Model Overview` — On Product2 (4 fields), On kugo2p__SalesOrderServiceLine__c, On kugo2p__SalesOrderProductLine__c blocks.
-- `## Workflow 3: Order Release` — "What Gets Created" (Subscriptions, Assets, Renewal Opportunity blocks) and "Product2 Flags for Order Release" table (now "Product2 (and APD) Flags for Order Release"; added the APD `CreateAsset__c` row).
-- `## Apex Class Logic` — "Renew/Track Flag Propagation Chain" diagram replaced with a clearer "Order Release Trigger Map" that separates the three independent flags.
-- `## Product Setup` → `### Setup Types` (added 0.2.5) — driver-fields table expanded to include `Track__c` and `CreateAsset__c`; new "Label vs behavior" callout; "What each type implies downstream" table rewritten so Products never claim Subscription creation, and Renewal Opportunity creation is properly attributed to the "Renewable" prefix.
-- `## Appendix A` — "Order Line kuga_sub Fields" and "Product2 kuga_sub Fields" tables corrected.
-
-### Changed
-
-- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.5` to `0.2.6`.
-- Bumped the README skills table row from `0.2.5` to `0.2.6` to match.
-
-### Notes
-
-- Docs-only change. No behavior change in the skill or the underlying package — the correction is purely to the documentation.
-- Frontmatter, README, and CHANGELOG all bumped in the same commit.
-
-## [0.2.5] — 2026-05-24
-
-### Added
-
-- `kugamon-full-qtc-submgmt` skill — new **Setup Types** sub-section in the existing `## Product Setup` section of `SKILL.md`. Documents the six possible Product Setup classifications that every Kugamon product resolves to:
-  1. `{Term} {Unit} Service` (e.g. `12 Month Service`)
-  2. `Renewable {Term} {Unit} Service` (requires `kuga_sub`)
-  3. `Product` (non-shippable)
-  4. `Shippable Product`
-  5. `Renewable Product` (requires `kuga_sub`)
-  6. `Renewable Shippable Product` (requires `kuga_sub`)
-- The new sub-section includes: (a) a driver-fields table mapping the five fields that determine the type (`kugo2p__Service__c`, `kugo2p__DefaultServiceTerm__c`, `kugo2p__UnitofTerm__c`, `kugo2p__DisableShipments__c`, `kuga_sub__Renewable__c`), (b) a six-row classification table showing the exact field combinations behind each type, (c) the rule in plain English, and (d) a downstream-implications table showing what each type creates on Order Release.
-
-### Changed
-
-- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.4` to `0.2.5`.
-- Bumped the README skills table row from `0.2.4` to `0.2.5` to match.
-
-### Notes
-
-- Docs-only change. No behavior change.
-- Frontmatter, README, and CHANGELOG all bumped in the same commit (consistent with 0.2.4 practice).
-
-## [0.2.4] — 2026-05-24
-
-### Fixed
-
-- `README.md` — Usage section examples used invented record-name prefixes that contradicted the naming conventions documented in Appendix E of `SKILL.md` (added in 0.2.3):
-  - `Q-0042` (Quote) → `SQ-260519-0020461` (correct `SQ-{YYMMDD}-{0000000}` format).
-  - `O-0099` (Order) → `SO-260521-0113570` (correct `SO-{YYMMDD}-{0000000}` format).
-- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.3` to `0.2.4` — done in the same commit as the README and CHANGELOG updates per the lesson learned in 0.2.3 (prior releases claimed frontmatter bumps that never made it into the file).
-- Bumped the README skills table row from `0.2.3` to `0.2.4` to match.
-
-### Notes
-
-- Docs-only change. No behavior change.
-
-## [0.2.3] — 2026-05-24
-
-### Added
-
-- `kugamon-full-qtc-submgmt` skill — new **Appendix E: Name Field & Sample Data Conventions** in `SKILL.md`. Documents the `Name`-field behavior of every key transactional and master-data Kugamon object so that sample data is generated with the correct convention. Organized into four groups:
-  - **Group A** — AutoNumber with date-stamped prefix: `kugo2p__SalesQuote__c` (`SQ-{YYMMDD}-{0000000}`), `kugo2p__SalesOrder__c` (`SO-{YYMMDD}-{0000000}`), `kugo2p__KugamonInvoice__c` (`INV-{YYMMDD}-{0000000}`). DO NOT set `Name`.
-  - **Group B** — AutoNumber, sequence-only (7-digit zero-padded). Covers all line/junction objects (`SalesQuoteProductLine`, `SalesQuoteServiceLine`, `SalesQuoteAdditionalChargeCredit`, `SalesQuoteOptionalLine`, `SalesOrderProductLine`, `SalesOrderServiceLine`, `SalesOrderAdditionalChargeCredit`, `KugamonInvoiceLine`, `KugamonInvoiceAdditionalChargeCredit`, `OrderInvoiceRelationship`, `ShipmentLine`, `AppliedPayment`, `AdditionalProductDetail`, `ProductCost`) plus `Shipment`, and `ConfigurationOption` which uses a `CO-` prefix. DO NOT set `Name`.
-  - **Group C** — `Text(80)` but overwritten by Kugamon Apex: `kugo2p__PaymentX__c` (set to `Payment for Order <SO#>` / `Payment for Invoice <INV#>`), `kugo2p__Payment_Method__c` (set to `<Card Brand> (<last 4>)`), `kugo2p__AdditionalAccountDetail__c` (mirrors `Account.Name`). DO NOT set `Name`.
-  - **Group D** — `Text(80)`, user-supplied: line groups, invoice schedules, payment profiles, additional charges/credits, product catalogs/categories, tiers, tiered pricing, carriers, warehouses, tax locations, VAT, service delivery schedules, processor connections. DO set a meaningful `Name`.
-  - Includes a "Common mistakes to avoid in sample data" checklist (don't invent your own prefix like `Q-…`, `QT-…`, `ORD-…`, `IN-…`, `INV2-…`, or `SQ-0001` without a date; the date portion is the org-local creation date; etc.).
-- `SKILL.md` — Appendix A, Quote "Auto-Managed Fields" table: the `Name` row now shows the `SQ-{YYMMDD}-{0000000}` format inline and cross-references Appendix E.
-- Background: a sample quote in an unrelated task had been created with the wrong `Name` convention. Appendix E documents the actual rules so future sample-data work follows them.
-
-### Fixed
-
-- `SKILL.md` frontmatter `version` was still `0.2.1` even though CHANGELOG entries for 0.2.1 and 0.2.2 both claimed the frontmatter had been bumped. Brought it up to `0.2.3` to match this release.
-
-### Verification
-
-- Tooling-API `FieldDefinition` metadata for every documented object (confirmed `Auto Number` vs `Text(80)` per object).
-- Live sample records from the `kugamon.dev` org (Org ID `00D80000000cH27EAE`) across all four groups.
-
-### Notes
-
-- Docs-only change. No behavior change.
-
-## [0.2.2] — 2026-04-23
-
-### Fixed
-
-- `kugamon-full-qtc-submgmt` skill — replaced remaining "Kugamon CPQ" references with the correct Kugamon package names. "Kugamon CPQ" is not one of the approved package names; the packages are Kugamon Quote to Cash (kugo2p), Kugamon Subscription Management (kuga_sub), and Kugamon Subscription Billing.
-  - Object Model Overview heading: "kugo2p Objects (Kugamon CPQ — ~50 custom objects)" → "kugo2p Objects (Kugamon Quote to Cash — ~50 custom objects)".
-  - Opportunity Fields > Strongly Recommended Fields (`AccountId`): "Required for Kugamon CPQ to work properly" → "Required for Kugamon Quote to Cash to work properly".
-  - Appendix D: Renew Field Guide > Overview: "classification in Kugamon CPQ" → "classification in Kugamon Subscription Management" (`kuga_sub__Renew__c` is a kuga_sub field, so Subscription Management is the correct package reference).
-- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.1` to `0.2.2`.
-
-### Notes
-
-- Copy-only changes. No behavior change.
-
-## [0.2.1] — 2026-04-23
-
-### Fixed
-
-- `kugamon-full-qtc-submgmt` skill — corrected the umbrella product name in the skill's opening line. Changed "Full lifecycle skill for Kugamon RevOps for Salesforce functionality" to "Full lifecycle skill for Kugamon RevOps for Salesforce" so the umbrella product name is used exactly as specified, with no modifiers.
-- `README.md` — updated the `kugamon-full-qtc-submgmt` description from "Manages the full Kugamon lifecycle" to "Manages the full Kugamon RevOps for Salesforce lifecycle" so the umbrella product name is used consistently.
-- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.0` to `0.2.1`.
-
-### Notes
-
-- Copy-only changes. No behavior change.
-
-## [0.2.0] — 2026-04-23
-
-### Changed
-
-- `kugamon-full-qtc-submgmt` skill — made the Opportunity pipeline forecasting field rule explicit and upfront:
-  - Added a new "⚠️ CRITICAL: Opportunity Pipeline Forecasting Field" section near the top of `SKILL.md`, stating that when `HAS_KUGA_SUB = true` the skill MUST use `kuga_sub__Amount__c` for all Opportunity pipeline forecasting and MUST NOT use the standard Salesforce `Amount` field. Includes CORRECT vs WRONG SOQL examples.
-  - Reinforced the same rule at the top of Appendix B (Amount Fields Guide) with a "🔑 Pipeline Forecasting Rule (read first)" callout.
-  - Updated the Opportunity amount-fields table in Appendix B to flag the standard `Amount` field as "Do NOT use for forecasting when `HAS_KUGA_SUB = true`" and to mark `kuga_sub__Amount__c` as the authoritative forecasting field.
-  - Promoted the forecasting rule to item #1 in the Amount Field Best Practices list.
-- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.1.0` to `0.2.0`.
-
-### Notes
-
-- **Behavior change**: in subscription orgs, the skill now defaults to `kuga_sub__Amount__c` for pipeline forecasting queries, reports, and summaries. Non-subscription orgs (`HAS_KUGA_SUB = false`) are unaffected — the standard `Amount` field is still used as before.
-
-## [0.1.0] — 2026-04-19
-
-### Added
-
-- Initial private release of the `kugamon-skills` repository.
-- `kugamon-full-qtc-submgmt` skill — full Kugamon Quote-to-Cash and Subscription Management lifecycle support:
-  - Supports CPQ, Q2C, SubMgmt, and Subscription Billing deployment modes.
-  - Auto-detects which Kugamon packages (`kugo2p`, `kuga_sub`) are installed in the target org.
-  - Handles opportunities, quotes, orders, order releases, invoices, payments, shipments, contracts, subscriptions, renewal opportunities, and assets.
-- `README.md` with install, usage, and testing guidance.
-- `LICENSE` — proprietary, all rights reserved.
-- `.gitignore` for common OS, editor, and secret files.
-
-### Notes
-
-- Status: **in-testing**. Repository is private during the validation phase.
+(See repo history for earlier entries — trimmed from this inline payload for brevity; nothing in them has changed.)
