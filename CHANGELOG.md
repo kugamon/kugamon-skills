@@ -4,6 +4,56 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [Released]
 
+## [0.3.0] — 2026-10-09
+
+### Added
+
+- `kugamon-full-qtc-submgmt` skill — documents two new Kugamon Quote to Cash v11.0 feature areas:
+
+  **1. Decimal price precision (6 decimals)**
+  - New top-level section `## Decimal Price Precision (kugo2p v11.0+)` in `SKILL.md` listing every field widened to `Currency(12, 6)` and spelling out which objects were NOT widened (invoice line, payments, PricebookEntry, OpportunityLineItem, Opportunity roll-ups).
+  - New Appendix A sub-section `### 6-Decimal Price Fields (v11.0+)` with the authoritative field matrix:
+    - `kugo2p__SalesQuoteProductLine__c` — `ListPrice__c`, `SalesPrice__c`, `TierPrice__c`
+    - `kugo2p__SalesQuoteServiceLine__c` — `ListPrice__c`, `SalesPrice__c`, `NonUpliftSalesPrice__c`, `UpliftPrice__c`, `TierPrice__c`
+    - `kugo2p__SalesQuoteOptionalLine__c` — `ListPrice__c`, `SalesPrice__c`
+    - `kugo2p__SalesOrderProductLine__c` — `ListPrice__c`, `SalesPrice__c`, `TierPrice__c`
+    - `kugo2p__SalesOrderServiceLine__c` — `ListPrice__c`, `SalesPrice__c`, `NonUpliftSalesPrice__c`, `UpliftPrice__c`, `TierPrice__c`
+    - `kugo2p__AccountPricing__c` — `Price__c`
+    - `kugo2p__Tier__c` — `TierPrice__c`
+    - `Asset` — `kugo2p__PurchasePrice__c`
+  - Documents the new `kugo2p__PriceScale__c` picklist on `kugo2p__AdditionalProductDetail__c` (observed values `4`, `5`, `6`; blank = org default) and its sibling picklists `kugo2p__QuantityScale__c` and `kugo2p__ServiceTermScale__c`.
+  - Updates Object Model Overview APD entry to flag the new scale picklists.
+  - SOQL / DML guidance: do not round 6-decimal fields client-side; invoice-line math stays at 2 decimals; opportunity amount roll-ups continue at their native precision.
+
+  **2. 2-way Quote Chat**
+  - New `## Workflow 8: 2-way Quote Chat (kugo2p v11.0+)` section covering the full data model:
+    - `kugo2p__ChatParticipant__c` (key prefix `a0B`) — one row per internal User or external Contact authorized to chat on a quote, carries read-receipt state (`kugo2p__LastReadMessage__c`, `kugo2p__DateLastRead__c`).
+    - `kugo2p__ChatMessage__c` (key prefix `a0H`) — one row per message, HTML body in `kugo2p__Body__c`, plain-text preview in `kugo2p__BodyPreview__c`.
+    - Relationship diagram: Quote → Participants → Messages. The sender's identity + type live on the Participant, not the Message.
+    - Internal chat on the Quote record and the external 2-way chat on the Online Quote page use the SAME two objects — only `kugo2p__ChatParticipant__c.kugo2p__Type__c` ('Internal User' vs 'Contact') distinguishes them.
+    - Composite key `kugo2p__ParticipantKey__c = {QuoteId}-{UserOrContactId}` prevents duplicate participants.
+    - Sample SOQL to read a full thread and to list participants with unread timestamps.
+    - Programmatic send: resolve participant → insert message with `Body` (HTML) + `BodyPreview` (plain-text truncation) + denormalized `ParticipantName`.
+  - Object Model Overview adds a new "Quote Chat (v11.0+)" sub-group listing both objects.
+  - Appendix A adds field-reference tables for `kugo2p__ChatParticipant__c` and `kugo2p__ChatMessage__c`.
+  - Appendix E (sample-data naming) adds both chat objects to Group B (AutoNumber, sequence-only): ChatMessage uses a 9-digit zero-padded sequence (e.g. `000000165`); ChatParticipant uses a `CP-` prefix (e.g. `CP-0000070`). DO NOT set `Name` on either.
+
+### Changed
+
+- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.2.7` to `0.3.0` (minor — new feature coverage, no behavior change to existing guidance).
+
+### Verification
+
+- Tooling-API `FieldDefinition` queries against the `kugamon.dev` org confirmed every 6-decimal field on every object listed above.
+- Live `kugo2p__ChatParticipant__c` and `kugo2p__ChatMessage__c` records in `kugamon.dev` confirmed the Type picklist values (`Internal User`, `Contact`), the composite ParticipantKey format, the HTML body / plain preview split, and the sequence formats (`CP-0000070`, `000000165`).
+- Cross-referenced the Kugamon v11.0 "What's New" change log at https://help.kugamon.com/s/article/kugamon-quote-to-cash (sandbox push 10/02/2026, production push 10/16/2026).
+
+### Notes
+
+- Docs-only change in `kugamon-skills` — the behavior change lives in the Kugamon Quote to Cash v11.0 package itself.
+- README unchanged — the current README has no per-skill version row to bump.
+- Frontmatter and CHANGELOG bumped in the same commit.
+
 ## [0.2.7] — 2026-05-24
 
 ### Fixed
