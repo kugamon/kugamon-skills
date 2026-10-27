@@ -4,6 +4,33 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [Released]
 
+## [0.3.1] — 2026-10-27
+
+### Fixed
+
+- **Which package and trigger creates each Order Release record.** 0.2.7 said Subscriptions are created by the Order Service Line trigger and Assets by the Order Product Line trigger. The line-object split was right; the trigger attribution was not. Corrected from source in both packages (kugo2p in the kugo2p packaging org; kuga_sub in the kuga_sub packaging org with kugo2p v11.0 installed):
+  - **Assets are created by kugo2p**, not kuga_sub — `SalesOrderHelper.CreateAssets`, called from the kugo2p **Order** trigger (after update) when the Order enters Approved or Released and has no Assets yet. This happens in every deployment mode, with or without kuga_sub.
+  - **Contracts, Subscriptions and Renewal Opportunities are created by kuga_sub** (`KugamonHelper.createContract` → `createSubscription` → `createRenewalOpportunity`). The chain runs once per transaction from kuga_sub's Order, Order Product Line or Order Service Line after-update trigger, whichever completes it. kugo2p re-saves every order line on each status change, which is what fires kuga_sub's line triggers.
+  - kuga_sub links the Assets in the same transaction (`Asset.kuga_sub__ContractNumber__c`, `Asset.kuga_sub__ParentSubscription__c`, `Subscription.kuga_sub__ParentAsset__c`, where applicable).
+- **`kugo2p__CreateAsset__c` on APD is a picklist, not a checkbox.** Values: `Per Line` (one Asset per Order Product Line) and `Per Quantity` (one Asset per unit); blank = no Asset. Every "`CreateAsset__c = true`" reference was replaced.
+- **Package Detection** no longer implies that Assets need kuga_sub.
+- **Workflow 3: Order Release** is no longer labelled "HAS_KUGA_SUB = true only"; it now says what kugo2p creates in every mode and what kuga_sub adds.
+
+### Added
+
+- Order Release Trigger Map: new **RELEASE CHAIN**, **CONTRACT** and **UN-RELEASE / DELETE** sections; the **ASSET** section now covers `Per Line` / `Per Quantity` and when kugo2p deletes Assets (back to Draft/Sent, line or Order delete, Refresh Assets).
+- Common Issues: "Order Release not creating Assets", and the kuga_sub release error for a `Per Quantity` parent product with a `Per Line` child or a child service that creates a Subscription.
+
+### Changed
+
+- Bumped `kugamon-full-qtc-submgmt` skill version in `SKILL.md` frontmatter from `0.3.0` to `0.3.1`.
+- Bumped `plugins/kugamon/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` from `0.2.7` to `0.3.1` (they were not bumped for 0.3.0), so installed copies pick up the update.
+
+### Notes
+
+- Docs-only change. No behavior change in the skill's guidance on which line object produces what, and none in the packages.
+- README unchanged — it has no per-skill version row and does not describe trigger attribution.
+
 ## [0.3.0] — 2026-10-09
 
 ### Added

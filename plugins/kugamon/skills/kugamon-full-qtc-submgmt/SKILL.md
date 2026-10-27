@@ -1,7 +1,7 @@
 ---
 name: kugamon-full-qtc-submgmt
 description: Manage the full Kugamon Quote-to-Cash lifecycle in Salesforce — opportunities, quotes, orders, invoices, payments, shipments, and assets, which uses the kugo2p namespace (Kugamon Quote to Cash). And optionally Managed the full Kugamon Subscription Billing lifecycle  in Salesforce - opportunities, quotes, orders, invoices, payments, shipments, contracts, subscriptions, and assets, which requires the kuga_sub namespace (Kugamon Subscription Management). Detects which packages are installed and adapts accordingly. Use when users request operations on any Kugamon object.
-version: 0.3.0
+version: 0.3.1
 status: Beta
 ---
 
@@ -31,10 +31,10 @@ Full lifecycle skill for Kugamon Subscription Billing, which is combination of a
 
 Check if `kuga_sub__Renew__c` exists on `OpportunityLineItem` by describing the object's fields via the connected Salesforce MCP or API.
 
-- `HAS_KUGA_SUB = true` → kuga_sub package is installed (subscription management, contracts, assets, renewals)
+- `HAS_KUGA_SUB = true` → kuga_sub package is installed (subscription management, contracts, subscriptions, renewals)
 - `HAS_KUGA_SUB = false` → only kugo2p (Q2C only, no subscription lifecycle)
 
-This flag controls revenue classification, line-item separation, and whether Order Release creates contracts/assets/subscriptions.
+This flag controls revenue classification, line-item separation, and whether Order Release creates contracts, subscriptions and renewal opportunities. Assets are created by Kugamon Quote to Cash (kugo2p) whether or not kuga_sub is installed.
 
 ---
 
@@ -252,7 +252,7 @@ See **Appendix A** for full field reference. Key custom objects by stage:
 
 **Fields added by kuga_sub to standard / kugo2p objects:**
 
-- **On Product2**: `kuga_sub__Renewable__c` (drives "Renewable" prefix on Setup labels AND triggers Renewal Opportunity creation on Order Release — does NOT create Subscription), `kuga_sub__RenewalProduct__c` (substitute product for renewal), `kuga_sub__Track__c` (label "Create Subscription" — generates Subscription on Order Release but only for Order Service Lines where `APD.kugo2p__Service__c = true`; Order Product Lines never generate Subscriptions), `kuga_sub__UpliftRenewalPrice__c`. Asset creation is separate and Product-only: APD `kugo2p__CreateAsset__c` drives Asset creation, and only Order Product Lines generate Assets.
+- **On Product2**: `kuga_sub__Renewable__c` (drives "Renewable" prefix on Setup labels AND triggers Renewal Opportunity creation on Order Release — does NOT create Subscription), `kuga_sub__RenewalProduct__c` (substitute product for renewal), `kuga_sub__Track__c` (label "Create Subscription" — generates Subscription on Order Release but only for Order Service Lines where `APD.kugo2p__Service__c = true`; Order Product Lines never generate Subscriptions), `kuga_sub__UpliftRenewalPrice__c`. Asset creation is separate and Product-only: the APD picklist `kugo2p__CreateAsset__c` (`Per Line` / `Per Quantity`) drives Asset creation, kugo2p (not kuga_sub) creates the Assets, and only Order Product Lines generate Assets.
 
 - **On OpportunityLineItem** (18 fields): `kuga_sub__Renew__c` (CRITICAL — recurring vs one-time), ARR/MRR/NonRecurringRevenue, ServiceTerm/UnitofTerm/DateServiceEnd, NetAmount/TotalAmount/ListAmount, Service formula, forecasting fields, discount tracking, uplift tracking.
 
@@ -262,11 +262,11 @@ See **Appendix A** for full field reference. Key custom objects by stage:
 
 - **On kugo2p__SalesOrderServiceLine__c**: `kuga_sub__Renew__c` (revenue classification), `kuga_sub__Track__c` (generates Subscription — Order Service Lines never generate Assets).
 
-- **On kugo2p__SalesOrderProductLine__c**: `kuga_sub__Renew__c`, `kuga_sub__Track__c` (present but no effect on product lines — Order Product Lines never generate Subscriptions). Order Product Lines generate Assets when APD `kugo2p__CreateAsset__c = true`.
+- **On kugo2p__SalesOrderProductLine__c**: `kuga_sub__Renew__c`, `kuga_sub__Track__c` (present but no effect on product lines — Order Product Lines never generate Subscriptions). Order Product Lines generate Assets when APD `kugo2p__CreateAsset__c` is `Per Line` or `Per Quantity`.
 
 - **On Contract** (21 fields): roll-up ARR/MRR/subscription count/dates, formula Effective, renewal notice controls.
 
-- **On Asset** (4 fields): `kuga_sub__ContractNumber__c`, `kuga_sub__ParentSubscription__c`, `kuga_sub__ParentLine__c`, `kuga_sub__Renew__c` formula.
+- **On Asset** (4 fields): `kuga_sub__ContractNumber__c`, `kuga_sub__ParentSubscription__c`, `kuga_sub__ParentLine__c`, `kuga_sub__Renew__c` formula. kuga_sub stamps `ContractNumber__c` (and `ParentSubscription__c` where the Asset sits under a Subscription) on the Assets kugo2p creates.
 
 **Line-object split for Order Release** — Subscriptions come only from Order Service Lines, Assets come only from Order Product Lines, no matter how the underlying flags are set. See **Workflow 3: Order Release** for details.
 
@@ -274,34 +274,70 @@ See **Appendix A** for full field reference. Key custom objects by stage:
 
 ## Apex Triggers / Apex Class Logic
 
-(The detailed trigger inventory and class-logic descriptions from v0.2.x are preserved — see Appendix A and Workflow 3 for the fields and behaviors they govern. The Order Release Trigger Map is the key diagram: Subscription creation is Order Service Line trigger only, Asset creation is Order Product Line trigger only, Renewal Opportunity creation can come from any line.)
+(The detailed trigger inventory and class-logic descriptions from v0.2.x are preserved — see Appendix A and Workflow 3 for the fields and behaviors they govern.) The Order Release Trigger Map below shows **which package and which trigger** creates each record. The line-object split holds: Subscriptions come only from Order Service Lines, Assets only from Order Product Lines, and Renewal Opportunities from any renewable line. But the records are not created by the line triggers alone:
+
+- **Assets** are created by **kugo2p**, from the **Order** trigger (after update), by `SalesOrderHelper.CreateAssets`. This happens in every deployment mode, with or without kuga_sub.
+- **Contracts, Subscriptions and Renewal Opportunities** are created by **kuga_sub** (`KugamonHelper.createContract` → `createSubscription` → `createRenewalOpportunity`). The chain can run from kuga_sub's Order, Order Product Line or Order Service Line after-update trigger — whichever completes it in that transaction.
 
 ### Order Release Trigger Map
 
 ```
-SUBSCRIPTION  (Order Service Line trigger only)
+RELEASE CHAIN  (kuga_sub — HAS_KUGA_SUB = true)
 ─────────────
+Order status → Released
+  (or → Approved, when the kuga_sub setting InitiateOrderSubscriptionManagement__c = 'Approve/Release')
+   └─ kuga_sub Order trigger (after update) queues the Order and notes whether it has
+      renewable products / renewable services
+   └─ kugo2p re-saves every Order Product Line and Order Service Line on each status change
+      (SalesOrderHelper.updateOrderStatus), which fires kuga_sub's line triggers (after update)
+   └─ the chain runs once per transaction, from whichever kuga_sub trigger completes it:
+        • the Order trigger, if the line triggers already fired, or
+        • the Order Product Line / Order Service Line trigger
+      createContract → createSubscription → createRenewalOpportunity
+   └─ the order in which kugo2p's and kuga_sub's triggers run on the same object is not
+      guaranteed; kuga_sub handles both orders
+
+CONTRACT  (kuga_sub createContract)
+────────
+   └─ sets kuga_sub__ContractNumber__c on the Order and kugo2p__Contract__c on its
+      Order Service Lines; links any existing Assets to the Contract
+
+SUBSCRIPTION  (kuga_sub createSubscription — Order Service Lines only)
+────────────
 Product2.kuga_sub__Track__c (label: "Create Subscription")
    └─ propagates → OLI / QuoteLine / OrderLine .kuga_sub__Track__c
        └─ on Order Release, when the line is a Service
           (lands on kugo2p__SalesOrderServiceLine__c; APD.Service__c = true):
-              └─→ Order Service Line trigger creates a Subscription
+              └─→ one Subscription per Order Service Line with Track__c = true
        └─ on Order Product Lines: no Subscription, ever
 
-ASSET  (Order Product Line trigger only)
+ASSET  (kugo2p SalesOrderHelper.CreateAssets — Order Product Lines only)
 ─────
-kugo2p__AdditionalProductDetail__c.kugo2p__CreateAsset__c
-   └─ on Order Release, when the line is a Product
-      (lands on kugo2p__SalesOrderProductLine__c; APD.Service__c = false):
-          └─→ Order Product Line trigger creates an Asset
+kugo2p__AdditionalProductDetail__c.kugo2p__CreateAsset__c  (picklist)
+   └─ kugo2p Order trigger (after update), when the Order enters Approved or Released
+      and has no Assets yet, for lines on kugo2p__SalesOrderProductLine__c (APD.Service__c = false):
+          • 'Per Line'     → one Asset per Order Product Line
+          • 'Per Quantity' → one Asset per unit of Quantity
+          • blank          → no Asset
    └─ on Order Service Lines: no Asset, ever
+   └─ with kuga_sub installed, kuga_sub links them in the same transaction (where applicable):
+      Asset.kuga_sub__ContractNumber__c, Asset.kuga_sub__ParentSubscription__c,
+      Subscription.kuga_sub__ParentAsset__c
+   └─ kugo2p deletes the Assets when the Order goes back to Draft/Sent, when lines or the
+      Order are deleted, and on Refresh Assets
 
-RENEWAL OPPORTUNITY  (any line)
+RENEWAL OPPORTUNITY  (kuga_sub createRenewalOpportunity — any line)
 ───────────────────
 Product2.kuga_sub__Renewable__c
    └─ on Order Release, if true on any line's product (service or product):
        └─→ Renewal Opportunity created
    └─ also drives the "Renewable" prefix on the Product Snapshot LWC
+
+UN-RELEASE / DELETE  (kuga_sub)
+───────────────────
+Order un-released or deleted
+   └─ kuga_sub deletes the Order's Subscriptions and the Contract created for it, and deletes
+      (or closes as Lost) the Renewal Opportunity; Expansion orders reduce the renewal's lines
 ```
 
 **Separate concept — revenue classification, not Subscription creation:** `kuga_sub__Renew__c` on `OpportunityLineItem` / Quote Lines / Order Lines classifies revenue as recurring (MRR/ARR) vs one-time (NonRecurringRevenue). It does NOT trigger Subscription creation. See **Appendix D: Renew Field Guide**.
@@ -316,32 +352,32 @@ Flow: validate billing address + contact on Account → verify Opportunity (and 
 
 Orders are created from quotes via the Kugamon UI "Create Order" action. Key fields on `kugo2p__SalesOrder__c`: Account, Opportunity, SalesQuote, Pricebook, RecordType, contact fields, DateOrdered. Line items split into `SalesOrderServiceLine__c` and `SalesOrderProductLine__c` by APD Service flag.
 
-## Workflow 3: Order Release (HAS_KUGA_SUB = true only)
+## Workflow 3: Order Release
 
-When an order is "released," kuga_sub triggers create downstream records.
+When an order is released, **kugo2p** creates Assets (plus Shipments, Service Delivery Schedules and Invoices, per its Application Settings) in every deployment mode. When `HAS_KUGA_SUB = true`, **kuga_sub** also creates the Contract, Subscriptions and Renewal Opportunity, and links the Assets to them. See the **Order Release Trigger Map** above for which trigger does what.
 
 ### Order Release Checkboxes (on `kugo2p__SalesOrder__c`)
 
 | Field | What It Creates |
 |---|---|
 | `kuga_sub__GenerateContract__c` | Contract |
-| `kuga_sub__GenerateAsset__c` | Assets (only from Order Product Lines, when APD `kugo2p__CreateAsset__c = true`) |
+| `kuga_sub__GenerateAsset__c` | Assets (only from Order Product Lines, when APD `kugo2p__CreateAsset__c` is `Per Line` or `Per Quantity`; the Assets themselves are created by kugo2p) |
 | `kuga_sub__GenerateSubscription__c` | Subscriptions (only from Order Service Lines, when `Track__c = true`) |
 | `kuga_sub__GenerateRenewalOpportunity__c` | Renewal Opportunity (from any line whose product has `kuga_sub__Renewable__c = true`) |
 
 ### What Gets Created
 
-- **Contract** — linked to the order via `kuga_sub__ContractNumber__c`; contacts copied per `UpdateContractContacts__c`; subscriptions roll up ARR/MRR/counts/dates; `kuga_sub__Effective__c` formula flags currently-active contracts.
-- **Assets** — created **only** from Order Product Lines when `kugo2p__AdditionalProductDetail__c.kugo2p__CreateAsset__c = true`. **Order Service Lines never generate Assets.** APD field is in the `kugo2p` namespace, not `kuga_sub`, and not on Product2.
-- **Subscriptions** — created **only** from Order Service Lines when `kuga_sub__Track__c = true` on the line (usually propagated from `Product2.kuga_sub__Track__c`, label: "Create Subscription"). **Order Product Lines never generate Subscriptions.** `kuga_sub__Renew__c` on the line is for revenue classification only (see Appendix D), not Subscription creation.
+- **Contract** — created by **kuga_sub** (`KugamonHelper.createContract`); linked to the order via `kuga_sub__ContractNumber__c` and to its Order Service Lines via `kugo2p__Contract__c`; contacts copied per `UpdateContractContacts__c`; subscriptions roll up ARR/MRR/counts/dates; `kuga_sub__Effective__c` formula flags currently-active contracts.
+- **Assets** — created by **kugo2p** (`SalesOrderHelper.CreateAssets`, from the Order trigger when the Order enters Approved or Released) **only** from Order Product Lines whose `kugo2p__AdditionalProductDetail__c.kugo2p__CreateAsset__c` picklist is `Per Line` (one Asset per line) or `Per Quantity` (one Asset per unit). **Order Service Lines never generate Assets.** APD field is in the `kugo2p` namespace, not `kuga_sub`, and not on Product2. kuga_sub then stamps `kuga_sub__ContractNumber__c` on them, and `kuga_sub__ParentSubscription__c` where the Asset sits under a Subscription.
+- **Subscriptions** — created by **kuga_sub** (`KugamonHelper.createSubscription`) **only** from Order Service Lines when `kuga_sub__Track__c = true` on the line (usually propagated from `Product2.kuga_sub__Track__c`, label: "Create Subscription"). **Order Product Lines never generate Subscriptions.** `kuga_sub__Renew__c` on the line is for revenue classification only (see Appendix D), not Subscription creation.
 - **Renewal Opportunity** — created when `Product2.kuga_sub__Renewable__c = true` for any line on the released order; sets `kuga_sub__ParentContract__c` / `kuga_sub__ParentOrder__c`; close date from contract end date; `kuga_sub__RenewalPriceUpliftPercent__c` carries forward.
 
 ### Product2 (and APD) Flags for Order Release
 
 | Field | Object | Effect |
 |---|---|---|
-| `kuga_sub__Track__c` (label: "Create Subscription") | `Product2` | When `true` AND the line lands on an **Order Service Line** (`APD.Service__c = true`): Order Service Line trigger generates a Subscription. Ignored on Order Product Lines. |
-| `kugo2p__CreateAsset__c` | `kugo2p__AdditionalProductDetail__c` (APD) | When `true` AND the line lands on an **Order Product Line** (`APD.Service__c = false`): Order Product Line trigger generates an Asset. Ignored on Order Service Lines. |
+| `kuga_sub__Track__c` (label: "Create Subscription") | `Product2` | When `true` AND the line lands on an **Order Service Line** (`APD.Service__c = true`): kuga_sub generates a Subscription for that Order Service Line. Ignored on Order Product Lines. |
+| `kugo2p__CreateAsset__c` (picklist: `Per Line` / `Per Quantity`) | `kugo2p__AdditionalProductDetail__c` (APD) | When set AND the line lands on an **Order Product Line** (`APD.Service__c = false`): kugo2p's Order trigger generates one Asset per line (`Per Line`) or one per unit (`Per Quantity`). Blank = no Asset. Ignored on Order Service Lines. |
 | `kuga_sub__Renewable__c` | `Product2` | When `true` on any line's product: triggers Renewal Opportunity creation. Also drives the "Renewable" prefix on the Product Snapshot LWC label. |
 | `kuga_sub__RenewalProduct__c` | `Product2` | Substitute product used on renewal quotes. |
 | `kuga_sub__UpliftRenewalPrice__c` | `Product2` | Apply renewal price uplift percentage. |
@@ -376,7 +412,7 @@ Invoices: `kugo2p__KugamonInvoice__c` + `kugo2p__KugamonInvoiceLine__c` (note: i
 
 Extended per-product metadata auto-created by `Product2Trigger`. Key fields:
 - `kugo2p__Service__c` — **CRITICAL** when `HAS_KUGA_SUB = false`: product vs service classification; also decides which Order line object each line lands on, which in turn decides whether Subscription or Asset creation can fire.
-- `kugo2p__CreateAsset__c` — drives Asset creation on Order Release (Order Product Lines only).
+- `kugo2p__CreateAsset__c` — picklist (`Per Line` / `Per Quantity` / blank); drives Asset creation by kugo2p on Order Release (Order Product Lines only).
 - `kugo2p__PriceScale__c`, `kugo2p__QuantityScale__c`, `kugo2p__ServiceTermScale__c` — v11.0 picklists for per-product decimal precision. See "Decimal Price Precision" at top.
 - `kugo2p__Taxable__c`, `kugo2p__Configurable__c`, `kugo2p__Kit__c`.
 
@@ -403,10 +439,10 @@ Every product resolves to one of six Setup types based on independent flags:
 |---|---|
 | `{Term} {Unit} Service` | Order Service Line + Subscription if `Track__c = true`. (No Asset — services never create Assets.) |
 | `Renewable {Term} {Unit} Service` | Order Service Line + **Renewal Opportunity**. + Subscription if `Track__c = true`. (No Asset.) |
-| `Product` | Order Product Line + Asset if APD `CreateAsset__c = true`. (No Subscription — products never create Subscriptions.) |
-| `Shippable Product` | Order Product Line + Shipment. + Asset if APD `CreateAsset__c = true`. (No Subscription.) |
-| `Renewable Product` | Order Product Line + **Renewal Opportunity**. + Asset if APD `CreateAsset__c = true`. (No Subscription.) |
-| `Renewable Shippable Product` | Order Product Line + Shipment + **Renewal Opportunity**. + Asset if APD `CreateAsset__c = true`. (No Subscription.) |
+| `Product` | Order Product Line + Asset if APD `CreateAsset__c` is set. (No Subscription — products never create Subscriptions.) |
+| `Shippable Product` | Order Product Line + Shipment. + Asset if APD `CreateAsset__c` is set. (No Subscription.) |
+| `Renewable Product` | Order Product Line + **Renewal Opportunity**. + Asset if APD `CreateAsset__c` is set. (No Subscription.) |
+| `Renewable Shippable Product` | Order Product Line + Shipment + **Renewal Opportunity**. + Asset if APD `CreateAsset__c` is set. (No Subscription.) |
 
 ---
 
@@ -421,7 +457,9 @@ When updating quotes OR opportunity line items, ALWAYS check for consistency and
 - **Quote total vs. Amount mismatch**: HAS_KUGA_SUB=true → `Amount` may be MRR, compare to `kuga_sub__AnnualContractValueInitial__c`. HAS_KUGA_SUB=false → Quote total should match OLI sum.
 - **ACV double-counting**: Products with `kuga_sub__Renew__c = false` but non-zero MRR/ARR. Fix: set Renew = true on recurring lines.
 - **Line items not populating**: check both ProductLine and ServiceLine; verify APD.Service__c.
-- **Order Release not creating contracts/subscriptions**: verify Order Release checkboxes AND the Product2/APD flags.
+- **Order Release not creating contracts/subscriptions**: verify Order Release checkboxes AND the Product2/APD flags, and that the Order reached the status kuga_sub releases on (Released, or Approved in `Approve/Release` mode).
+- **Order Release not creating Assets**: Assets come from kugo2p, not kuga_sub. Check that the product line's APD `kugo2p__CreateAsset__c` is `Per Line` or `Per Quantity` (not blank) and that the Order entered Approved or Released. Assets are created only when the Order has none yet; after changing product setup, use Refresh Assets.
+- **Release error about "Per Quantity" parent products** (kuga_sub): a parent product (kit/bundle or configured product) with `CreateAsset__c = Per Quantity` cannot have a child product set to `Per Line` or a child service that creates a Subscription. Change the parent to `Per Line` or blank; if the Order was Approved, also run Refresh Assets.
 - **Missing billing address / contact**: must be resolved before quote creation.
 
 ---
@@ -462,7 +500,7 @@ kuga_sub Order Release controls: `kuga_sub__GenerateContract__c`, `kuga_sub__Gen
 | `kuga_sub__Renew__c` | Service & Product Lines | Revenue classification (recurring vs one-time). See Appendix D. Does NOT create Subscription. |
 | `kuga_sub__Track__c` (label: "Create Subscription") | Service & Product Lines | Creates Subscription on Order Release **only when on an Order Service Line** (`kugo2p__SalesOrderServiceLine__c`). Propagated from `Product2.kuga_sub__Track__c`. Ignored on Order Product Lines. |
 
-Asset creation is driven by APD `kugo2p__CreateAsset__c`, only on Order Product Lines.
+Asset creation is driven by the APD picklist `kugo2p__CreateAsset__c` (`Per Line` / `Per Quantity`), only on Order Product Lines, and is performed by kugo2p.
 
 ### Subscription (`kuga_sub__Subscription__c`)
 
@@ -474,11 +512,11 @@ Roll-up: `kuga_sub__AnnualRecurringRevenue__c`, `kuga_sub__MonthlyRecurringReven
 
 ### Asset kuga_sub Fields
 
-`kuga_sub__ContractNumber__c`, `kuga_sub__ParentSubscription__c`, `kuga_sub__ParentLine__c` (formula), `kuga_sub__Renew__c` (formula).
+`kuga_sub__ContractNumber__c`, `kuga_sub__ParentSubscription__c`, `kuga_sub__ParentLine__c` (formula), `kuga_sub__Renew__c` (formula). kuga_sub sets `ContractNumber__c` (and `ParentSubscription__c` where the Asset sits under a Subscription) on the Assets kugo2p creates during Order Release.
 
 ### Product2 kuga_sub Fields
 
-`kuga_sub__Renewable__c` (drives "Renewable" label + Renewal Opportunity creation — does NOT create Subscription), `kuga_sub__Track__c` (label "Create Subscription" — generates Subscription only on Order Service Lines), `kuga_sub__RenewalProduct__c`, `kuga_sub__UpliftRenewalPrice__c`. Asset creation is on APD, not Product2 (field `kugo2p__CreateAsset__c`, Order Product Lines only).
+`kuga_sub__Renewable__c` (drives "Renewable" label + Renewal Opportunity creation — does NOT create Subscription), `kuga_sub__Track__c` (label "Create Subscription" — generates Subscription only on Order Service Lines), `kuga_sub__RenewalProduct__c`, `kuga_sub__UpliftRenewalPrice__c`. Asset creation is on APD, not Product2 (picklist `kugo2p__CreateAsset__c`, Order Product Lines only, created by kugo2p).
 
 ### 6-Decimal Price Fields (v11.0+)
 
