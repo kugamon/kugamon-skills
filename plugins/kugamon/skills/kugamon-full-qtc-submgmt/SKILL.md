@@ -1,7 +1,7 @@
 ---
 name: kugamon-full-qtc-submgmt
-description: Manage the full Kugamon Quote-to-Cash lifecycle in Salesforce — opportunities, quotes, orders, invoices, payments, shipments, and assets, which uses the kugo2p namespace (Kugamon Quote to Cash). And optionally Managed the full Kugamon Subscription Billing lifecycle  in Salesforce - opportunities, quotes, orders, invoices, payments, shipments, contracts, subscriptions, and assets, which requires the kuga_sub namespace (Kugamon Subscription Management). Detects which packages are installed and adapts accordingly. Use when users request operations on any Kugamon object.
-version: 0.3.1
+description: Manage the full Kugamon Quote-to-Cash lifecycle in Salesforce — opportunities, quotes, orders, invoices, payments, shipments, and assets, which uses the kugo2p namespace (Kugamon Quote to Cash). And optionally Managed the full Kugamon Subscription Billing lifecycle  in Salesforce - opportunities, quotes, orders, invoices, payments, shipments, contracts, subscriptions, and assets, which requires the kuga_sub namespace (Kugamon Subscription Management). Detects which packages and versions are installed and adapts accordingly. Covers cancelling subscriptions and contracts, merging contracts (kuga_sub v7.1+), and refreshing renewal opportunity products. Use when users request operations on any Kugamon object.
+version: 0.4.0
 status: Beta
 ---
 
@@ -36,6 +36,26 @@ Check if `kuga_sub__Renew__c` exists on `OpportunityLineItem` by describing the 
 
 This flag controls revenue classification, line-item separation, and whether Order Release creates contracts, subscriptions and renewal opportunities. Assets are created by Kugamon Quote to Cash (kugo2p) whether or not kuga_sub is installed.
 
+### Version detection
+
+Some behaviour depends on the installed version, so read it before cancelling, merging or relying on 6-decimal subscription prices. Query the Tooling API (`InstalledSubscriberPackage` cannot be filtered on namespace in the query — select all rows and filter on `SubscriberPackage.NamespacePrefix` yourself):
+
+```sql
+-- Tooling API
+SELECT SubscriberPackage.NamespacePrefix, SubscriberPackage.Name,
+       SubscriberPackageVersion.MajorVersion, SubscriberPackageVersion.MinorVersion,
+       SubscriberPackageVersion.PatchVersion
+FROM InstalledSubscriberPackage
+```
+
+| Package version | What it changes for this skill |
+|---|---|
+| `kugo2p` 11.0+ | 6-decimal line pricing and Quote Chat (see below). |
+| `kuga_sub` 7.0+ | `kuga_sub__Subscription__c.kuga_sub__PurchasePrice__c` holds 6 decimals; renewal orders created by the Renewal Order automation take their contacts from the Contract. |
+| `kuga_sub` 7.1+ | **Merge Contract** exists (Workflow 4c). Cancelling a Subscription also cancels its Order Service Line, which stops that line's scheduled billing (Workflow 4a). Refresh Products leaves out cancelled Order Service Lines. Subscriptions can be moved to another Contract. |
+
+Below `kuga_sub` 7.1 there is no Merge Contract, and cancelling a Subscription changes only the Subscription and the renewal opportunity — the Order Service Line and its scheduled invoice lines are left as they were.
+
 ---
 
 ## Decimal Price Precision (kugo2p v11.0+)
@@ -54,6 +74,9 @@ As of Kugamon Quote to Cash v11.0, the price fields on quote lines, order lines,
 | `kugo2p__AccountPricing__c` | `kugo2p__Price__c` |
 | `kugo2p__Tier__c` | `kugo2p__TierPrice__c` |
 | `Asset` | `kugo2p__PurchasePrice__c` |
+| `kuga_sub__Subscription__c` (kuga_sub v7.0+) | `kuga_sub__PurchasePrice__c` |
+
+`kuga_sub__Subscription__c` money fields other than Purchase Price (`kuga_sub__MRR__c`, `kuga_sub__ARR__c`, `kuga_sub__NetAmount__c`, `kuga_sub__TotalAmount__c`) stay at 2 decimals.
 
 ### Per-product rounding: `kugo2p__PriceScale__c` on APD
 
@@ -248,7 +271,7 @@ See **Appendix A** for full field reference. Key custom objects by stage:
 
 ### kuga_sub Objects (Kugamon Subscriptions — only when HAS_KUGA_SUB = true)
 
-**Custom**: `kuga_sub__Subscription__c` (34 fields) — the subscription record linking orders to contracts.
+**Custom**: `kuga_sub__Subscription__c` (34 fields) — the subscription record linking orders to contracts. Its Contract link, `kuga_sub__ContractNumber__c`, is a Master-Detail that can be re-parented from kuga_sub v7.1, so a Subscription can move to another Contract (Merge Contract does this). `kuga_sub__Status__c`: `Purchased` / `Provisioned` / `Cancelled`.
 
 **Fields added by kuga_sub to standard / kugo2p objects:**
 
@@ -398,7 +421,164 @@ FROM kuga_sub__Subscription__c WHERE kuga_sub__ContractNumber__c = '<contract_id
 ORDER BY kuga_sub__Service__r.Name
 ```
 
-Renewal automation: `ContractRenewalNoticeBatcher` sends renewal emails N days before contract end; `RenewalOrderBatcher` creates renewal orders N days before end.
+Renewal automation: `ContractRenewalNoticeBatcher` sends renewal emails N days before contract end; `RenewalOrderBatcher` creates renewal orders N days before end. From kuga_sub v7.0 the renewal order takes its Buying, Billing and Shipping contacts from the Contract in the renewal opportunity's standard Contract field (`kuga_sub__ContactBuying__c`, `kuga_sub__ContactBilling__c`, `kuga_sub__ContactShipping__c`), falling back to the Account's Additional Account Detail for any the Contract leaves blank. Renewal opportunities carry that standard Contract field only when Kugamon Settings has Extend Contract on Renewal on; the Parent Contract field is always set.
+
+### Contract, Subscription and Renewal actions (buttons)
+
+These actions are Visualforce pages behind detail-page buttons. Their logic lives in package classes that are not `global`, so they cannot be called from subscriber Apex or the API. Where an action is driven by a field change, the table says so — that is the API route.
+
+| Button | Object | Page | API equivalent |
+|---|---|---|---|
+| Cancel Subscription | Subscription | `/apex/kuga_sub__kontroller?action=cancelSubscription&id={Subscription Id}` | Update `kuga_sub__Status__c` to `Cancelled` (Workflow 4a) |
+| Cancel Contract | Contract | `/apex/kuga_sub__kontroller?action=cancelContract&id={Contract Id}` | Update `Status` to `Cancelled`, and `EndDate` to today if it is in the future (Workflow 4b) |
+| Merge Contract (v7.1+) | Contract | `/apex/kuga_sub__MergeContract?id={Contract Id}` | None — UI only (Workflow 4c) |
+| Refresh Products | Opportunity, Opportunity Products list | `/apex/kuga_sub__Kontroller?action=refreshProducts&Id={Opportunity Id}` | None — UI only (Workflow 4d) |
+| Manage Contract / Manage Contracts | Contract / Account | `/apex/kuga_sub__ManageContract?id={Contract Id}`, `/apex/kuga_sub__ManageContractAccount?id={Account Id}` | None — UI only |
+| New Expansion Opportunity / New Expansion Order | Contract | `/apex/kuga_sub__kontroller?action=newExpansionOpportunity&id={Contract Id}` / `action=newExpansionOrder` | None — UI only. Both refuse a Cancelled Contract |
+
+Give the user the page link with the record Id filled in when an action is UI only. Never try to reproduce a UI-only action with your own DML.
+
+## Workflow 4a: Cancel a Subscription
+
+**How.** The Cancel Subscription button sets `kuga_sub__Subscription__c.kuga_sub__Status__c = 'Cancelled'` and nothing else; everything that follows runs in the Subscription trigger. Updating the field through the API therefore has the same effect as the button. `kuga_sub__Status__c` is a restricted picklist: `Purchased`, `Provisioned`, `Cancelled`.
+
+**Refused when**
+
+- the Subscription is already `Cancelled` (the button says so and stops);
+- `kuga_sub__EndDate__c` is before today — "Expired Subscriptions cannot be Cancelled." This is enforced in the trigger, so an API update fails too.
+
+**What happens (kuga_sub v7.1+)**, for a Subscription whose Order Service Line is renewable (`kuga_sub__Renew__c = true` on the line):
+
+1. **The Order Service Line is cancelled.** kuga_sub sets `kugo2p__CancelDate__c` = today, `kugo2p__CancelledQuantity__c` = the Subscription's `kuga_sub__Quantity__c`, and `kugo2p__CancelReason__c` = `Subscription Cancelled`.
+2. **Its scheduled billing stops.** Quote to Cash reacts when an Order Service Line's Cancel Reason goes from blank to a value: the line's invoice lines and service delivery schedules with `kugo2p__RecordStatus__c = 'Scheduled'` become `Cancelled`, and the Order's service tax, discount and VAT totals are recalculated. Invoices already generated are not touched — credit or refund those separately if the user wants money back.
+3. **The renewal opportunity shrinks.** On the Contract's Current Renewal Opportunity (`Contract.kuga_sub__RenewalOpportunity__c`), the matching product is reduced by the cancelled quantity, and deleted if that takes it to zero or below. A product matches only if all of these agree: the renewal product (the product's `kuga_sub__RenewalProduct__c`, or the product itself); the Order Service Line's sales price against the renewal product's `kuga_sub__NonUpliftSalesPrice__c` (to 6 decimals); line plus order discount; line description; configuration option. If anything differs — a renewal product edited by hand, or a separate renewal product priced differently — **nothing is reduced and no error is raised**. Check the renewal opportunity afterwards and correct it by hand, or run Refresh Products (Workflow 4d), which leaves out the cancelled line but rebuilds every product.
+4. **Contract totals catch up.** The Contract's subscription count leaves out Cancelled subscriptions straight away. ARR and MRR roll up only subscriptions flagged `kuga_sub__IsActive__c`, and that flag is resynced from the `kuga_sub__Active__c` formula by the scheduled Subscription job (or the next save of the Subscription) — so ARR and MRR drop then, not at the moment of cancellation.
+
+If the Order Service Line is **not** renewable (`kuga_sub__Renew__c = false`), only the Subscription's Status changes: the line is not stamped, its scheduled invoice lines keep billing, and there is no renewal product to reduce. Tell the user, and check the line's scheduled invoice lines.
+
+Also watch for:
+
+- **A Subscription with no Order Service Line** (`kuga_sub__OrderServiceLine__c` blank — usually created by hand or migrated). Cancelling it fails with an Apex error. Report it; do not retry.
+- **An Order Service Line that already has a Cancel Reason.** kuga_sub overwrites it, but Quote to Cash only cancels scheduled billing when Cancel Reason goes from blank to a value — so those invoice lines keep billing.
+- **Child Subscriptions** (`kuga_sub__ParentSubscription__c` pointing at the one being cancelled, e.g. kit or bundle members) are not cancelled with their parent. Cancel each one.
+
+Below kuga_sub v7.1, steps 1 and 2 do not happen.
+
+**Alternative the package itself suggests:** end a subscription with an **Expansion Order** carrying a negative quantity of the subscription's service. Releasing that order reduces or removes the service on the renewal opportunity.
+
+**Bulk cancellations.** The cancellation logic runs once per transaction. Cancel at most 200 Subscriptions per update call, and do not cancel in two separate updates inside one transaction (for example two calls in one anonymous Apex block). Records past the first 200, or in the second update, end up `Cancelled` without the line being stamped or the renewal reduced. The allowance is shared: cancelling several Contracts in one update, or cancelling an Expansion Order (Workflow 4b), uses it up for the rest of the transaction. After any bulk cancellation, run the check below.
+
+**Check the result**
+
+```sql
+SELECT Id, Name, kuga_sub__Status__c, kuga_sub__Quantity__c,
+       kuga_sub__OrderServiceLine__r.kugo2p__CancelDate__c,
+       kuga_sub__OrderServiceLine__r.kugo2p__CancelledQuantity__c,
+       kuga_sub__OrderServiceLine__r.kugo2p__CancelReason__c
+FROM kuga_sub__Subscription__c
+WHERE Id IN ('<subscription_ids>')
+
+SELECT Id, Name, kugo2p__RecordStatus__c, kugo2p__SalesOrderServiceLine__c
+FROM kugo2p__KugamonInvoiceLine__c
+WHERE kugo2p__SalesOrderServiceLine__c = '<order_service_line_id>'
+ORDER BY CreatedDate
+```
+
+## Workflow 4b: Cancel a Contract
+
+**How.** The Cancel Contract button asks for confirmation, then sets `Contract.Status = 'Cancelled'` and moves `EndDate` back to today if it is in the future. Through the API, set the same two fields.
+
+**Refused when** the Contract is already Cancelled, or its Status is anything other than blank, `Draft` or `Activated` — "Contract Status must be Draft or Activated to Cancel."
+
+**What happens**
+
+1. The Current Renewal Opportunity is set to `Closed Lost` with today's Close Date.
+2. Every Subscription on the Contract with an **End Date after today** that is not already Cancelled is set to `Cancelled` — so each one runs Workflow 4a (on v7.1+ that also cancels the Order Service Lines and their scheduled billing). The query also asks for "active" Subscriptions, but `kuga_sub__Active__c` needs an Effective Contract, and by then the Contract is Cancelled. So Subscriptions **ending today** or with **blank dates** are left as they are; cancel those individually if the user wants them cancelled.
+3. The Contract can no longer be used for New Expansion Opportunity, New Expansion Order, or Refresh Products.
+
+The 200-per-transaction limit in Workflow 4a applies here too: a Contract with more than 200 live Subscriptions needs the check in Workflow 4a afterwards.
+
+**Cancelling an Order also cancels Subscriptions.** When an Order goes from `Approved` or `Released` to `Cancelled` (`kugo2p__RecordStatus__c`), kuga_sub sets every Subscription on that Order to `Cancelled`.
+
+- **New or Renewal Order:** the Order's renewal opportunity goes to Closed Lost, and each Subscription runs Workflow 4a.
+- **Expansion Order:** the renewal opportunity is reduced by the expansion-order logic instead, and Workflow 4a is switched off for the rest of that transaction — so do not cancel other Subscriptions in the same transaction.
+- **Either kind:** if any Subscription on the Order has already expired, the Order cannot be cancelled ("Expired Subscriptions cannot be Cancelled.").
+
+## Workflow 4c: Merge Contracts (kuga_sub v7.1+)
+
+Folds one Contract (the **current** Contract, the one the button is pressed on) into another Contract for the same Account (the **primary** Contract), so the subscriptions renew together under one Contract and one renewal opportunity. The current Contract is **deleted**. Get the user's explicit confirmation before they run it, and say which Contract will be deleted.
+
+**Where.** Merge Contract button on the current Contract: `/apex/kuga_sub__MergeContract?id={Contract Id}`. If the button is not on the Contract page layout, an admin has to add it. The page lists the eligible primary Contracts; the user picks one and confirms. **UI only** — there is no API route, and the merge must not be imitated with DML: it moves a dozen record types and deletes in a specific order inside one transaction.
+
+**The current Contract can be merged only if**
+
+- it has an Account, a Price Book (`kuga_sub__Pricebook2Id__c`), and a Current Renewal Opportunity with a Date Required (`kuga_sub__DateRequired__c`, the earliest product start date on the renewal);
+- its Current Renewal Opportunity has **no Quote and no Order at all** — not even ones the user cannot see. Otherwise: "This Contract cannot be merged. The Current Renewal Opportunity has at least one Quote and/or Order present."
+
+**A Contract is an eligible primary only if**
+
+1. it is Effective (`kuga_sub__Effective__c = true`);
+2. it has the same Price Book and the same Account;
+3. the current Contract's renewal Date Required falls inside the primary's renewal service window: primary Date Required ≤ current Date Required ≤ primary `kuga_sub__ServiceDateExpires__c`;
+4. it is not the current Contract.
+
+The page lists every Contract that passes those four. One more check runs only when the user confirms: the primary's Current Renewal Opportunity must have record type `Renewal` and point back to the primary as its Parent Contract (`kuga_sub__ParentContract__c`). If it does not, the merge stops before changing anything, because it could not refresh that opportunity — so check it too.
+
+Check eligibility read-only before sending the user to the button:
+
+```sql
+-- the current Contract
+SELECT Id, ContractNumber, AccountId, kuga_sub__Pricebook2Id__c, kuga_sub__RenewalOpportunity__c,
+       kuga_sub__RenewalOpportunity__r.kuga_sub__DateRequired__c
+FROM Contract WHERE Id = '<current_contract_id>'
+
+-- blocks the merge if either returns a row
+SELECT Id FROM kugo2p__SalesQuote__c WHERE kugo2p__Opportunity__c = '<current_renewal_opp_id>' LIMIT 1
+SELECT Id FROM kugo2p__SalesOrder__c WHERE kugo2p__Opportunity__c = '<current_renewal_opp_id>' LIMIT 1
+
+-- eligible primary Contracts
+SELECT Id, ContractNumber, StartDate, EndDate, kuga_sub__RenewalOpportunity__r.Name,
+       kuga_sub__RenewalOpportunity__r.kuga_sub__DateRequired__c,
+       kuga_sub__RenewalOpportunity__r.kuga_sub__ServiceDateExpires__c,
+       kuga_sub__RenewalOpportunity__r.RecordType.Name,
+       kuga_sub__RenewalOpportunity__r.kuga_sub__ParentContract__c
+FROM Contract
+WHERE kuga_sub__Effective__c = true
+  AND AccountId = '<account_id>'
+  AND kuga_sub__Pricebook2Id__c = '<pricebook_id>'
+  AND Id != '<current_contract_id>'
+  AND kuga_sub__RenewalOpportunity__r.kuga_sub__DateRequired__c <= <current_date_required>
+  AND kuga_sub__RenewalOpportunity__r.kuga_sub__ServiceDateExpires__c >= <current_date_required>
+ORDER BY kuga_sub__RenewalOpportunity__r.kuga_sub__DateRequired__c, ContractNumber
+```
+
+**What the merge does** — one transaction; any failure rolls everything back ("Merge Contract failed. No changes were saved."):
+
+1. **Re-points to the primary Contract:** Opportunities (`ContractId`, `kuga_sub__ParentContract__c`) other than the current Contract's renewal opportunity; Quotes (`kuga_sub__ContractNumber__c`); Orders (`kuga_sub__ContractNumber__c`, `kuga_sub__ParentContract__c`, and `kuga_sub__RenewalOpportunity__c` from the current renewal opportunity to the primary's); Order and Quote Service Lines and Account Pricing (`kugo2p__Contract__c`); Assets (`kuga_sub__ContractNumber__c`); Subscriptions (`kuga_sub__ContractNumber__c`). Records the running user cannot see are moved too.
+2. **Brings over the current Contract's own records:** Contract Contact Roles are re-created (a Contact + Role the primary already has is skipped; the primary keeps its own primary role); Notes and Attachments are re-created (new record Ids and created dates); Files are linked to the primary (same documents); Tasks and Events are moved, archived ones included. Attachments over 4 MB in total block the merge — convert them to Files first. Any other lookup to the current Contract, such as an org's own custom fields, is simply cleared when it is deleted.
+3. **Deletes** the current Contract, then its Current Renewal Opportunity.
+4. **Runs Refresh Products** on the primary's Current Renewal Opportunity (Workflow 4d), so the merged subscriptions now renew there. Unlike the re-pointing, this step respects the running user's sharing: Orders they cannot see are left out of the rebuilt renewal products. Have someone who can see all of the Account's Orders run the merge.
+
+No Quote or Order is ever deleted. The counts of moved records appear briefly in a toast before the page returns to the primary Contract, so ask the user to note them. Then check the primary's renewal opportunity products yourself.
+
+Also worth knowing:
+
+- the page lists at most 200 eligible Contracts;
+- the current Contract's own Status is not checked, so a Cancelled or expired Contract can be merged in. Its Order Service Lines cancelled before v7.1 have no Cancel Date, so those services would come back onto the primary's renewal. Flag this before the user merges a Cancelled Contract.
+
+## Workflow 4d: Refresh Products on a Renewal Opportunity
+
+Deletes every product on the renewal opportunity and rebuilds them from the Parent Contract's Orders that point to this opportunity (`kuga_sub__RenewalOpportunity__c`), are Released (or Approved, when Kugamon Settings start subscription management on Approve/Release), and have `kuga_sub__GenerateRenewalOpportunity__c = true`. Only renewable lines (`kuga_sub__Renew__c = true`) are used. Products added by hand are lost — say so before the user runs it.
+
+- An Order's product lines are used only if the Order also has at least one renewable, uncancelled service line. **If every service line has been cancelled, the renewal opportunity ends up with no products at all** — renewable product lines included.
+- A renewal product with no price book entry in the Order's price book is skipped without an error.
+
+**Refused when** the opportunity's record type is not `Renewal`, it has no Parent Contract, the Parent Contract is Cancelled, or it is not the Parent Contract's Current Renewal Opportunity.
+
+**v7.1+:** Order Service Lines with a `kugo2p__CancelDate__c` are left out, line by line, so cancelled subscriptions do not come back. The same rule applies when Order Release builds renewal products. Order Product Lines have no such filter.
+
+UI only — Refresh Products button on the Opportunity (or the Opportunity Products related list).
+
 
 ## Workflow 5-7: Invoice / Payment / Shipment
 
@@ -460,6 +640,10 @@ When updating quotes OR opportunity line items, ALWAYS check for consistency and
 - **Order Release not creating contracts/subscriptions**: verify Order Release checkboxes AND the Product2/APD flags, and that the Order reached the status kuga_sub releases on (Released, or Approved in `Approve/Release` mode).
 - **Order Release not creating Assets**: Assets come from kugo2p, not kuga_sub. Check that the product line's APD `kugo2p__CreateAsset__c` is `Per Line` or `Per Quantity` (not blank) and that the Order entered Approved or Released. Assets are created only when the Order has none yet; after changing product setup, use Refresh Assets.
 - **Release error about "Per Quantity" parent products** (kuga_sub): a parent product (kit/bundle or configured product) with `CreateAsset__c = Per Quantity` cannot have a child product set to `Per Line` or a child service that creates a Subscription. Change the parent to `Per Line` or blank; if the Order was Approved, also run Refresh Assets.
+- **A cancelled Subscription is still billing**: check the Order Service Line's `kugo2p__CancelReason__c` and its invoice lines' `kugo2p__RecordStatus__c`. Usual causes: kuga_sub is below v7.1; the line is not renewable (`kuga_sub__Renew__c = false`), so v7.1 does not stamp it; or the Subscription was one of more than 200 cancelled in one transaction (Workflow 4a). Invoices generated before the cancellation are never changed.
+- **A cancelled Subscription came back after Refresh Products**: it was cancelled before the org reached v7.1, so its Order Service Line has no Cancel Date. Stamping the line the way v7.1 does (`kugo2p__CancelDate__c`, `kugo2p__CancelledQuantity__c`, `kugo2p__CancelReason__c = 'Subscription Cancelled'`) keeps it out — but that also cancels the line's `Scheduled` invoice lines, so confirm with the user first.
+- **Merge Contract shows no eligible Contracts**: compare the candidates against the four eligibility rules (and the merge-time renewal check) in Workflow 4c. The most common misses are a different Price Book and a current renewal Date Required that falls outside the other Contract's renewal service window.
+- **Merge Contract is blocked**: the current Contract's Current Renewal Opportunity has a Quote or an Order (including ones the user cannot see). Delete or re-home them first; the merge deletes that opportunity.
 - **Missing billing address / contact**: must be resolved before quote creation.
 
 ---
@@ -506,6 +690,22 @@ Asset creation is driven by the APD picklist `kugo2p__CreateAsset__c` (`Per Line
 
 Key fields: `Name` (auto), `kuga_sub__Account__c`, `kuga_sub__ContractNumber__c`, `kuga_sub__Order__c`, `kuga_sub__OrderServiceLine__c`, `kuga_sub__Service__c` (Product2), `kuga_sub__Quantity__c`, `kuga_sub__PurchasePrice__c`, `kuga_sub__MRR__c`, `kuga_sub__ARR__c`, `kuga_sub__NetAmount__c`, `kuga_sub__TotalAmount__c`, `kuga_sub__StartDate__c`, `kuga_sub__EndDate__c`, `kuga_sub__Status__c`, `kuga_sub__Renew__c`, `kuga_sub__Active__c`, `kuga_sub__IsActive__c`, `kuga_sub__ParentAsset__c`, `kuga_sub__ParentSubscription__c`, `kuga_sub__ServiceTerm__c`, `kuga_sub__UnitofTerm__c`.
 
+- `kuga_sub__ContractNumber__c` — Master-Detail(Contract), re-parentable from v7.1. Deleting a Contract deletes its Subscriptions, which is why Merge Contract moves them first.
+- `kuga_sub__Status__c` — restricted picklist: `Purchased` (set on Order Release), `Provisioned`, `Cancelled`. Setting `Cancelled` runs Workflow 4a.
+- `kuga_sub__PurchasePrice__c` — `Currency(12, 6)` from v7.0. `kuga_sub__MRR__c`, `kuga_sub__ARR__c`, `kuga_sub__NetAmount__c`, `kuga_sub__TotalAmount__c` stay `Currency(16, 2)`.
+
+### Order Service Line cancel fields (kugo2p — written by kuga_sub v7.1 on Subscription cancel)
+
+| Field | Type | Set by Cancel Subscription |
+|---|---|---|
+| `kugo2p__CancelDate__c` | Date | Today |
+| `kugo2p__CancelledQuantity__c` | Number(10, 2) | The Subscription's quantity |
+| `kugo2p__CancelReason__c` | Picklist, unrestricted. Package values: `Error`, `Price`, `Availablity` (sic), `Promise Date`, `Payment Problems`, `Contract Terminated`; orgs may add their own | `Subscription Cancelled` |
+
+Quote to Cash cancels the line's `Scheduled` invoice lines and service delivery schedules when `kugo2p__CancelReason__c` changes from blank to a value — by any route, not only through kuga_sub.
+
+`Subscription Cancelled` is not yet a defined value in every Quote to Cash version. Because the picklist is unrestricted the value still saves; it simply may not appear in the picklist's list of values. Filter on it with an exact string match.
+
 ### Contract kuga_sub Fields
 
 Roll-up: `kuga_sub__AnnualRecurringRevenue__c`, `kuga_sub__MonthlyRecurringRevenue__c`, `kuga_sub__TotalSubscriptionAmount__c`, `kuga_sub__TotalSubscriptionCount__c`, `kuga_sub__TotalSubscriptionQuantity__c`, `kuga_sub__SubscriptionStartDate__c`, `kuga_sub__SubscriptionEndDate__c`. Formula: `kuga_sub__Effective__c`, `kuga_sub__ContractRenewalNoticeDate__c`, `kuga_sub__SendRenewalNoticeToday__c`, `kuga_sub__AnnualRecurringRevenueForecast__c`.
@@ -532,6 +732,7 @@ Stored fields widened to `Currency(12, 6)` in Kugamon Quote to Cash v11.0. Preci
 | `kugo2p__AccountPricing__c` | `Price__c` |
 | `kugo2p__Tier__c` | `TierPrice__c` |
 | `Asset` | `kugo2p__PurchasePrice__c` |
+| `kuga_sub__Subscription__c` (kuga_sub v7.0+) | `kuga_sub__PurchasePrice__c` |
 
 **Formula (Currency) fields** that inherit 6-decimal precision from the stored fields they reference — these render at 6 decimals end-to-end:
 

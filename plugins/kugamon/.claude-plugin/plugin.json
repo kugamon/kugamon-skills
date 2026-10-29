@@ -1,6 +1,6 @@
 {
   "name": "kugamon",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Cowork / Claude Desktop plugin for agentic Quote-to-Cash and Subscription Management in Salesforce orgs running the Kugamon managed packages (kugo2p, kuga_sub). Auto-detects CPQ, Q2C, SubMgmt, and SB deployment modes.",
   "author": {
     "name": "Kugamon"

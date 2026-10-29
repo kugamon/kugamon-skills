@@ -96,6 +96,8 @@ Claude should check for the `kuga_sub__Renew__c` field on `OpportunityLineItem` 
 - "Convert quote SQ-260519-0020461 into an order."
 - "Generate an invoice for order SO-260521-0113570 and record a payment."
 - "Show me all open renewal opportunities closing this quarter."
+- "Cancel subscription SUB-0001234 and tell me what stops billing."
+- "Can contract 00001234 be merged into the Acme master contract? Check eligibility first."
 
 The skill handles package detection, record type routing, line-item population, and amount-field interpretation automatically.
 

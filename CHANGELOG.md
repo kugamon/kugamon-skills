@@ -4,6 +4,31 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [Released]
 
+## [0.4.0] — 2026-10-29
+
+### Added
+
+Kugamon Subscription Management **v7.1** (and v7.0) behaviour, read from the package source in the kuga_sub packaging org and checked against the kugo2p packaging org:
+
+- **Version detection** — a Tooling API query on `InstalledSubscriberPackage` (filter on namespace client-side; the query cannot) and a table of what each kugo2p / kuga_sub version changes.
+- **Contract, Subscription and Renewal actions** — every kuga_sub button with its page URL, and which ones have an API route (a field update) versus UI only.
+- **Workflow 4a: Cancel a Subscription** — setting `kuga_sub__Status__c = 'Cancelled'` is the whole action. On v7.1 the trigger also cancels the Order Service Line (`kugo2p__CancelDate__c`, `kugo2p__CancelledQuantity__c`, `kugo2p__CancelReason__c = 'Subscription Cancelled'`), which makes Quote to Cash cancel that line's `Scheduled` invoice lines and service delivery schedules. Also: the renewal-opportunity decrement and its exact match rule, the expired guard, non-renewable lines, Subscriptions without an Order Service Line, child Subscriptions, the once-per-transaction / 200-record limit, and a verification query.
+- **Workflow 4b: Cancel a Contract** — allowed statuses, the cascade (renewal opportunity Closed Lost; Subscriptions ending after today cancelled), what it blocks afterwards, and how cancelling an Approved or Released Order cancels its Subscriptions.
+- **Workflow 4c: Merge Contracts** (v7.1) — the prerequisite (no Quote or Order on the current Contract's renewal opportunity), the four eligibility rules plus the merge-time check, read-only eligibility SOQL, everything the merge re-points, re-creates, moves and deletes, the Refresh Products step and its sharing caveat. UI only.
+- **Workflow 4d: Refresh Products** — guards, which Orders and lines it rebuilds from, the v7.1 per-line exclusion of cancelled Order Service Lines (on Order Release too), and the empty-renewal case.
+- Appendix A: `kuga_sub__Subscription__c.kuga_sub__ContractNumber__c` is a re-parentable Master-Detail (v7.1); `kuga_sub__Status__c` values (`Purchased`, `Provisioned`, `Cancelled`, restricted); the Order Service Line cancel fields.
+- Four new Common Issues: a cancelled Subscription still billing; a cancelled Subscription returning after Refresh Products; no eligible Contracts to merge; a blocked merge.
+
+### Changed
+
+- 6-decimal pricing: `kuga_sub__Subscription__c.kuga_sub__PurchasePrice__c` is `Currency(12, 6)` from kuga_sub v7.0; the Subscription's MRR, ARR, Net Amount and Total Amount stay 2-decimal.
+- Renewal Order automation (v7.0) takes contacts from the Contract on the renewal opportunity's standard Contract field, falling back to the Additional Account Detail.
+- Skill version `0.3.1` → `0.4.0` in `SKILL.md`, `plugin.json` and `marketplace.json`.
+
+### Notes
+
+- Docs-only change. A separate fact-check against the source code found one wrong claim (a start date in the renewal match rule), which was corrected before release.
+
 ## [0.3.1] — 2026-10-27
 
 ### Fixed
