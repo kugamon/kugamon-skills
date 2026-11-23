@@ -115,7 +115,9 @@ The skill handles package detection, record type routing, line-item population, 
 
 ## Contributing
 
-Issues and pull requests are welcome: branch from `main`, open a PR, and request review from @kuldiph.
+This skill is maintained by Kugamon. Outside pull requests aren't accepted, but issues are welcome: if the skill disagrees with how a Kugamon package behaves, open an [issue](https://github.com/kugamon/kugamon-skills/issues) with the package version and what you saw, or email [support@kugamon.com](mailto:support@kugamon.com).
+
+The MIT license lets you fork and adapt the skill for your own use.
 
 ## License
 
