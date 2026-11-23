@@ -1,5 +1,7 @@
 # kugamon-skills
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A Claude Desktop / Cowork **plugin marketplace** that ships a single plugin (`kugamon`) for agentic **Quote-to-Cash** and **Subscription Management** in Salesforce orgs running the Kugamon managed packages.
 
 This repo **does not install an MCP server**. It assumes you already have a Salesforce MCP server connected to a Kugamon org. The plugin's job is to teach Claude the Kugamon object model, lifecycle flows, record type routing, and amount-field semantics so it can run Quote-to-Cash operations end to end.
@@ -41,7 +43,7 @@ kugamon-skills/                          # repo root = a marketplace
 │   └── marketplace.json                 # marketplace manifest (lists 1 plugin)
 ├── README.md                            # you are here
 ├── CHANGELOG.md
-├── LICENSE                              # proprietary
+├── LICENSE                              # MIT
 └── plugins/
     └── kugamon/                         # the plugin itself
         ├── .claude-plugin/
@@ -113,13 +115,13 @@ The skill handles package detection, record type routing, line-item population, 
 
 ## Contributing
 
-Internal contributors: branch from `main`, open a PR, and request review from @kuldiph. External contributions are not being accepted while the repo is private.
+Issues and pull requests are welcome: branch from `main`, open a PR, and request review from @kuldiph.
 
 ## License
 
-Copyright © 2026 Kugamon LLC. **All rights reserved.** See [LICENSE](./LICENSE) for details.
+[MIT](./LICENSE) — © 2026 Kugamon LLC. You are free to use, modify, and redistribute the skills in this repository, including commercially, provided the license and copyright notice are preserved.
 
-The Kugamon managed packages are commercial products of Kugamon LLC; use of the packages is subject to their own terms.
+The MIT license covers this repository only. The Kugamon managed packages are commercial products of Kugamon LLC; use of the packages is subject to their own terms.
 
 ## Support
 

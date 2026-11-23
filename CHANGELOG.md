@@ -4,6 +4,22 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [Released]
 
+## [0.4.1] — 2026-11-23
+
+### Changed
+
+- **License: MIT** (was proprietary, all rights reserved). Anyone may use, modify and redistribute the skills in this
+  repository, including commercially, provided the license and copyright notice are preserved. The MIT license covers
+  this repository only; the Kugamon managed packages keep their own commercial terms.
+  - `LICENSE` replaced with the MIT text (© 2026 Kugamon LLC).
+  - `license` field `Proprietary` → `MIT` in `plugin.json` and `marketplace.json`.
+  - README: MIT badge, License section, repo-layout comment; the Contributing note no longer says the repo is private.
+- Version `0.4.0` → `0.4.1` in `SKILL.md`, `plugin.json` and `marketplace.json`, so installed copies pick up the change.
+
+### Notes
+
+- No change to the skill's content. Every commit in the repository is Kugamon's own work, so no third-party notice applies.
+
 ## [0.4.0] — 2026-10-29
 
 ### Added
