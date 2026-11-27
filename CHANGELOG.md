@@ -4,6 +4,66 @@ All notable changes to this repository are documented here. This project loosely
 
 ## [Released]
 
+## [0.5.0] — 2026-11-26
+
+### Changed
+
+- **The skill is now `SKILL.md` plus nine reference files** in `plugins/kugamon/skills/kugamon-full-qtc-submgmt/references/`. `SKILL.md` keeps the start-here rules and the workflows (923 → 522 lines); the long tables, query lists and full texts are read only when a task needs them:
+  - `object-model.md` — every kugo2p object with its label, key prefix and purpose; the kuga_sub object and fields.
+  - `fields.md` — field tables for Opportunity, Opportunity Product, Quote and lines, Order and lines, Shipment, Invoice, Payment, Subscription, APD and Quote Chat.
+  - `queries.md` — the query library for every workflow.
+  - `order-release.md` — the trigger map, what Release builds, size limits.
+  - `pricing-and-decimals.md` — price lookup order, Account Pricing, Tiered Pricing, kits, configurable products, header discount, Price Scale and the 6-decimal field matrix.
+  - `amounts-and-renew.md` — amount fields, comparison rules and examples; the `kuga_sub__Renew__c` guide.
+  - `record-types-and-names.md` — record types; Name formats and sample-data rules.
+  - `subscriptions-and-contracts.md` — the full text of Workflows 4a–4d (cancel, merge, refresh). `SKILL.md` keeps a short version of each with the warnings.
+  - `troubleshooting.md` — Common Issues in full. `SKILL.md` keeps the six that come up most.
+  - Appendices A–E are replaced by these files.
+- **Package versions are listed in one place** — the Package versions table under Package Detection. Headings and body text no longer carry "(kugo2p v11.0+)" or "(kuga_sub v7.1+)"; they say "see Package versions". The skill's own `version` stays in the frontmatter. The description now says "merging contracts" without a version.
+- "Consistency Checking and Synchronization" is replaced by **Quote and Opportunity Sync** (see Fixed).
+- The Contents list includes the reference files, and its note now says where new material goes: rules and steps in `SKILL.md`, long tables and query lists in the matching reference file, versions only in the Package versions table.
+- Version `0.4.3` → `0.5.0` in `SKILL.md`, `plugin.json` and `marketplace.json`. README repo layout shows the `references/` folder.
+
+### Added
+
+Record-level content that 0.3.0 dropped, restored from 0.2.7 and checked against the Quote to Cash Master Knowledge document and a live org's schema, plus related record-level behaviour:
+
+- **Workflow 1 (Quote Creation)** — Steps 0–5: the Opportunity and its Products (and when a new Quote copies them); the checks before creating; what Kugamon fills in from the AAD and Kugamon Settings; Expiration Date; Primary; what can't change after creation; adding lines; Record Status, the status links and Sent-by-email; comparing amounts.
+- **Workflow 2 (Order Management)** — Generate Order and the other ways to create an Order (one Order per save through the API); contacts and addresses; statuses and their dates; the checks before a status change; changing Record Status through the API; the Primary Order.
+- **Workflow 3 (Order Release)** — what Release builds for each Application Settings combination; one transaction; re-releasing; Assets and Refresh Assets; the ~500-line ceiling.
+- **Workflows 5–7** written out — Invoices (how they're created, Invoice Schedules, Record Status / Posted / Payment Status, Balance Due), Payments (statuses, how payments are applied, refunds, gateways), Shipments (grouping, numbering, statuses).
+- New sections: **Writing Kugamon Records Through the API**, **Additional Account Info (AAD)**, **Pricing and Decimal Prices**.
+- Reference material: all 51 kugo2p objects; Account Pricing, Tiered Pricing (Volume and Slab), kits and bundles, configurable products and the header discount; the record type query; tax and VAT/GST, kit, configuration, tier and Account Pricing queries; the longer amount-field tables, examples and ACV troubleshooting; field tables for every main object.
+- Quote Chat: the Body Preview format, no notifications, when chat is available or read-only, what deleting a Quote or participant removes.
+- Common Issues for sync, Quote expiration, AAD defaults, Sent status, Generate Order, refused status changes, inserting several Orders, the CPU limit, invoices, payments and Quote Chat.
+
+### Fixed
+
+- **Quote → Opportunity sync is one way.** The old rule — "when updating quotes OR opportunity line items, synchronize both sides" — would have the agent edit Opportunity Products that the next sync overwrites or deletes. With sync on and the Quote Primary, change the Quote; only when sync is off (or the Quote isn't Primary) keep both sides in step by hand.
+- **Invoice amounts are 2 decimals.** 0.3.0–0.4.3 said the Invoice Line Line, Net, Total, Tax, VAT, Line Discount and Balance Due amounts render 6 decimals. Only the Invoice Line's Sales Price (a formula reading the Order line) and Effective Price carry line prices; amounts and totals stay at 2.
+- **Documents show each line at its Product's Price Scale**, not "all 6 decimals". Standard record pages, list views and reports show 6 decimals for every Product.
+- **Price Scale is 2 to 6, blank = 2** (was "observed values 4, 5, 6; blank = org default").
+- **A price written through the API with more decimals than the Price Scale is stored as written**; Kugamon's screens and documents round it (was: "APD-driven validation enforces the cap").
+- **A blank Sales Price through the API gets the List Price only** — Account Pricing and Tiered Pricing apply only in Add Lines and Edit Lines.
+- **`OpportunityLineItem.UnitPrice` displays 2 decimals but stores the synced price unrounded** (was: "2-decimal; read the quote line for full precision").
+- **Quote Expiration Date** defaults to today + Quote Valid In Days, and to today when that setting is blank (was "default: 30 days").
+- **Quote and Order status**: `kugo2p__RecordStatus__c` holds the value and is the field to report on; `kugo2p__Status__c` is the formula with links.
+- **APD field names.** `kugo2p__Taxable__c`, `kugo2p__Configurable__c` and `kugo2p__Kit__c` don't exist; the fields are `kugo2p__TaxableSales__c` / `TaxableUsage__c` / `TaxableExcise__c` / `TaxableVAT__c`, `kugo2p__ConfigurationMethod__c` and `kugo2p__KitBundle__c`.
+- **Quote and Order lines look up the APD**, not Product2 (`kugo2p__Product__c`, `kugo2p__Service__c`); the APD's `kugo2p__ReferenceProduct__c` is the Product2.
+- **`kuga_sub__Track__c` is on Product2 and Order Service Lines only.** The trigger map said it propagates to Opportunity Products and Quote Lines, and the field tables listed it on Order Product Lines.
+- **Asset has no `kuga_sub__Renew__c`.** The Asset section now lists kugo2p's own Asset fields, including `kugo2p__OrderProductLine__c`, which is how an Order's Assets are found.
+- **Quote Chat fields.** `kugo2p__Type__c` is a formula with three values (`Internal User`, `Portal / Community User`, `Contact`); `kugo2p__ParticipantName__c`, `kugo2p__Email__c` and `kugo2p__Title__c` are formulas. The posting steps no longer tell the agent to write `ParticipantName__c`, and the automated-posting rule now names the service-account User instead. Chat Message is a master-detail child of its participant; the Participant Key is a unique External ID.
+- **Record types.** Quote to Cash adds no Quote or Order record types; kuga_sub adds `New`, `Expansion` and `Renewal` (the mapping said Opportunity "New" → Quote "New Business"). Create without `RecordTypeId` when the org has none, and match on `DeveloperName`. The Payment Method, Recurring Charge and Processor Connection lists match the packages.
+- **Queries that wouldn't run.** 0.2.7's queries used fields that don't exist, e.g. `kugo2p__DateOrdered__c` (the Order date is `kugo2p__OrderDate__c`), `kugo2p__KugamonInvoice__c` on Invoice Line (it's `kugo2p__Invoice__c`), `kugo2p__DateInvoice__c` / `kugo2p__DateDue__c` (`kugo2p__InvoiceDate__c` / `kugo2p__InvoiceDueDate__c`), `kugo2p__DatePayment__c` (`kugo2p__Date__c`), `kugo2p__PaymentX__c` / `kugo2p__Amount__c` on Applied Payment (`kugo2p__Payment__c` / `kugo2p__AmountApplied__c`), the Tier, Kit/Bundle Member, configuration and tax fields, and `kugo2p__TaxExempt__c` on the AAD. All restored queries use the real names.
+- **Name formats.** Shipment is `SHP-{0000000}` (Appendix E listed it as a bare sequence); Subscription is `SUB-{0000000}`.
+- **Accounts without an AAD.** Through the API, a Quote or Order for an Account with no AAD creates one; only two or more AADs are refused.
+
+### Notes
+
+- Left out on purpose: the 0.2.7 Apex internals (trigger inventories, trigger-handler behaviour, class logic, batch-job internals) and anything the Master Knowledge document still marks as to be confirmed.
+- Every SOQL query in `SKILL.md` and the reference files was run, read-only, against a live org with both packages installed, with placeholders replaced. Kugamon's custom settings (including Application Settings) are protected and can't be queried in a customer's org; the skill says so instead of giving a query.
+- Docs-only change.
+
 ## [0.4.3] — 2026-11-26
 
 ### Changed

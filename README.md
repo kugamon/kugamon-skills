@@ -50,7 +50,9 @@ kugamon-skills/                          # repo root = a marketplace
         │   └── plugin.json              # plugin manifest
         └── skills/
             └── kugamon-full-qtc-submgmt/
-                └── SKILL.md             # the Quote-to-Cash lifecycle skill
+                ├── SKILL.md             # the Quote-to-Cash lifecycle skill: rules and workflows
+                └── references/          # read on demand: objects, fields, queries, pricing,
+                                         # release, subscriptions, amounts, names, troubleshooting
 ```
 
 The marketplace pattern means future plugins (e.g. Kugamon analytics, provisioning) can be added under `plugins/<name>/` and registered in `marketplace.json` — the install URL stays the same.
